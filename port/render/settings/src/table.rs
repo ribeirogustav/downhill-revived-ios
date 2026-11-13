@@ -117,6 +117,19 @@ pub const SETTINGS: &[Setting] = &[
     text("texture_cache_mb", "DHD_TEXTURE_CACHE_MB"),
     // sharp: the game's font with clean edges at any resolution; original: as the PS2 draws it.
     switch("font", "DHD_FONT", &[c("original", "Original"), c("sharp", "Sharp")], "sharp", "sharp"),
+    // The optional effects (finding 183, port/patches_effects.py): the riders' shadows and the sun's
+    // glow, the lens flare's ghosts, the particle system's effects. Off: not drawn, for speed; the
+    // game itself runs the same (allowed online). PC SETTINGS' Performance Mode turns all three off.
+    switch("shadows", "DHD_SHADOWS", SWITCH, "1", "1"),
+    switch("lens_flare", "DHD_LENS_FLARE", SWITCH, "1", "1"),
+    switch("particles", "DHD_PARTICLES", SWITCH, "1", "1"),
+    // Native VU (findings 164, 167, 194, 198, port/hle/vu1_mesh.inc): the VU1 programs' batch loops
+    // drawn by the native renderer's shaders instead of run on the emulated VU. Drawing only (the
+    // game runs the same, so allowed online); live. The player's default since finding 198 (off:
+    // troubleshooting, while the emulated path exists); the tools' runs, without dhd.ini, keep the
+    // emulated VU unless they set the variable. Not in the browser (settings.js leaves the variable
+    // out). DHD_NATIVE_VU1 also takes a list of loops with flags for tests ("0170,1708:skip").
+    switch("native_vu", "DHD_NATIVE_VU1", TOGGLE, "on", "off"),
     // Simulation steps a second (findings 067, 114), offline and online.
     choice("fps", "DHD_FPS", &[c("60", "60 fps"), c("120", "120 fps"), c("144", "144 fps"), c("165", "165 fps"),
                                c("240", "240 fps"), c("monitor", "Monitor")], "60", "60"),
@@ -159,6 +172,11 @@ pub const SETTINGS: &[Setting] = &[
     text("name", "DHD_NET_NAME"),
     choice("names", "DHD_NAMES", &[c("off", "Off"), c("small", "Small"), c("medium", "Medium"), c("large", "Large")], "small", "small"),
     text("rider", "DHD_NET_RIDER"),
+    // Where the rooms this player creates run (ONLINE's Room Region row, finding 181): Auto (the
+    // server picks by the Cloudflare location this PC reaches) or a Durable Object location hint.
+    choice("room_region", "DHD_NET_ROOM_REGION", &[c("auto", "Auto"), c("weur", "EU West"), c("eeur", "EU East"),
+                                                   c("enam", "NA East"), c("wnam", "NA West"), c("apac-ne", "Asia NE"),
+                                                   c("apac-se", "Asia SE"), c("oc", "Oceania")], "auto", "auto"),
     // The launcher's: whether it looks for a newer release, and where (empty: the official releases).
     choice("auto_update", "", &[c("ask", "Ask"), c("on", "Automatic"), c("off", "Off")], "ask", "ask"),
     text("update_url", "DHD_UPDATE_URL"),

@@ -26,7 +26,7 @@ out of date). New findings: copy `TEMPLATE.md` to the next free number on the la
 | Renderer (GS, Rust/wgpu) | 021 GS core, 084 WGSL, 085/086 Rust renderer, 088 CL2, 131 draw pass, 045/136 scale, 171 lost device | 025, 031-033, 035, 038 |
 | VU0/VU1 | 016, 019, 030, 090 (VU1R, OP3, SP1) | 027, 029, 037 |
 | Audio and movies | 022, 133, 055 | |
-| Online (state sync) | 044 puppets, 047 race protocol, 114 any frame rate, 118/119 rooms, 123, 128, 135, 137, 144, 158 SFU transport, 177 room sessions, 169 snapshots and prediction, 173 stalls, 175 rejoin in a race, 179, `docs/online-protocol.md` | 039-042 (lockstep parts) |
+| Online (state sync) | 044 puppets, 047 race protocol, 114 any frame rate, 118/119 rooms, 123, 128, 135, 137, 144, 158 SFU transport, 177 room sessions, 186 P2P rooms (hub star, SFU fallback), 169 snapshots and prediction, 173 stalls, 175 rejoin in a race, 179, `docs/online-protocol.md` | 039-042 (lockstep parts) |
 | Menus, settings, input | 050, 064, 092, 101/102 settings, 059/134 controllers, 141 touch, 056/140 widescreen | 065 (WM_CHAR part) |
 | Launcher, releases, installers | 093, 125, 138, 143, 098 disc check | 053, 054, 070 |
 | Speed (PC) | 089, 090, 129 perf log, 130/131 iGPU | 031, 032, 046, 048, 051, 066, 069 |
@@ -188,24 +188,58 @@ out of date). New findings: copy `TEMPLATE.md` to the next free number on the la
 | 155 | [The Android build for every arm64 core (ARMv8.0)](155-android-armv8-baseline.md) | current |  |
 | 156 | [Where a frame's time goes, before replacing the VU1 and GS emulation](156-profile-vu1-gs.md) | current |  |
 | 157 | [Keyboard and controller rebinding, in the launcher and in the game](157-control-rebinding.md) | current |  |
-| 158 | [race frames over Cloudflare Realtime SFU, and puppets with less delay](158-online-sfu-transport.md) | current |  |
+| 158 | [race frames over Cloudflare Realtime SFU, and puppets with less delay](158-online-sfu-transport.md) | partly superseded | [177](177-sfu-room-sessions.md) for the per-race Realtime sessions set up at the race's start, and TURN credentials per racer per race |
 | 159 | [Touch controls gone after loading a career save](159-touch-gone-after-save-load.md) | current |  |
 | 160 | [Garbage blocks on screen in the first seconds after start](160-boot-garbage-frames.md) | current |  |
 | 161 | [online abuse guard: kill switch, rate limits, bans and a short moderation log](161-online-abuse-guard.md) | current |  |
+| 162 | [Native VU1 and GS rendering, phase 0: what the game draws and how](162-native-vu1-gs-phase0.md) | current |  |
 | 163 | [REVIVED SETTINGS: tabs, a clearer Controls page, online name size](163-revived-settings.md) | current |  |
+| 164 | [Native VU1 rendering, phase 1: the world mesh loop on the GPU](164-native-vu1-world-mesh.md) | current |  |
 | 165 | [no port patch in code the port does not compile](165-dead-patch-guard.md) | current |  |
 | 166 | [Online races on the tracks without a split-screen level (Salt City MX and TD)](166-online-more-tracks.md) | current |  |
-| 167 | [Native iOS Port (iPhone 17 Pro Max / ARM64, v0.7.7)](167-ios-port.md) | partly superseded | [176](176-ios-0712-analog-input.md) for 0.7.12 integration and analog input |
-| 168 | [iOS performance review](168-ios-performance-review.md) | partly superseded | [176](176-ios-0712-analog-input.md) for 0.7.12 integration and analog input |
-| 169 | [iOS stability review 2](169-ios-stability-review.md) | partly superseded | [176](176-ios-0712-analog-input.md) for 0.7.12 integration and analog input |
-| 170 | [iOS external display and immediate touch input](170-ios-tv-touch-refinements.md) | partly superseded | [176](176-ios-0712-analog-input.md) for 0.7.12 integration and analog input |
-| 171 | [iOS widescreen, TV cadence and live graphics](171-ios-wide-tv-live-graphics.md) | partly superseded | [176](176-ios-0712-analog-input.md) for 0.7.12 integration and analog input |
-| 172 | [iOS integration with v0.7.8](172-ios-upstream-078.md) | partly superseded | [176](176-ios-0712-analog-input.md) for 0.7.12 integration and analog input |
-| 173 | [Localização da interface iOS](173-ios-localization.md) | partly superseded | [176](176-ios-0712-analog-input.md) for 0.7.12 integration and analog input |
-| 174 | [iOS startup, touch controls and the inventory exit](174-ios-start-menu-and-wide-exit.md) | partly superseded | [176](176-ios-0712-analog-input.md) for 0.7.12 integration and analog input |
-| 175 | [iOS 0.7.9 and external launcher](175-ios-upstream-079-airplay.md) | partly superseded | [176](176-ios-0712-analog-input.md) for 0.7.12 integration and analog input |
-| 176 | [iOS 0.7.12 and progressive analog input](176-ios-0712-analog-input.md) | partly superseded | [177](177-ios-control-editor.md) for native controls UI and deadzone defaults |
-| 177 | [native iOS control placement and button bindings](177-ios-control-editor.md) | current |  |
+| 167 | [Native VU1 rendering, phase 2: the remaining VU1 programs](167-native-vu1-phase2.md) | current |  |
+| 168 | [Native mesh draws batched, for the render thread](168-native-mesh-draw-batching.md) | current |  |
+| 169 | [online riders closer to now: bundled snapshots, 60 a second, shared clock, prediction](169-online-latency-round2.md) | current |  |
+| 170 | [PowerVR GE8320 phones close at start](170-powervr-ge8320-crash.md) | current |  |
+| 171 | [The picture freezes when the GPU device is lost](171-gpu-device-lost.md) | current |  |
+| 172 | [Fewer state changes per draw on the render thread](172-render-thread-state-changes.md) | partly superseded | [195](195-phone-speed.md) for the constants per draw by instance index: undone, the draw constants are a uniform block at a dynamic offset again |
+| 173 | [STATE snapshots that stop for seconds on the SFU, then arrive at once](173-sfu-snapshot-stalls.md) | current |  |
+| 174 | [60 fps at 2x on a Mali-G52 phone (Redmi 9): the GPU side](174-mali-gpu-60-at-2x.md) | current |  |
+| 175 | [online follow-ups after 0.7.12 (rejoin in a race, setup that never takes a race down, T...](175-online-followups.md) | partly superseded | [177](177-sfu-room-sessions.md) for the rejoin's SFU session restart: `sfu_restart` and the welcome's `race.sfu`; per-race sessions |
+| 176 | [PowerVR GE8320 phones close in the Bike Shop ("Out of Memory")](176-powervr-out-of-memory.md) | current |  |
+| 177 | [one Realtime session per member per room, set up before the race](177-sfu-room-sessions.md) | current |  |
+| 178 | [pre-release online lifecycle review](178-pre-0713-review.md) | partly superseded | [179](179-sfu-review-risks.md) for the three risks left open, now fixed |
+| 179 | [the three SFU risks the pre-release review left open](179-sfu-review-risks.md) | current |  |
+| 180 | [P2P rooms, chosen per room (host star)](180-p2p-prototype.md) | partly superseded | [186](186-p2p-transport.md) for the host's coordinator and the P2P server and Worker, TURN between games and its renewal, host loss ending the room; P2P rooms are server rooms with a hub star and an SFU fallback now |
+| 181 | [the room's region chosen by its creator, a smarter Auto, and a race ping beside the ser...](181-room-region-race-ping.md) | current |  |
+| 182 | [a slow Realtime API call no longer takes a racer out of the race](182-sfu-call-timeouts.md) | current |  |
+| 183 | [Performance settings: shadows and sun glow, lens flare, particles](183-performance-effects.md) | current |  |
+| 184 | [server rollouts that restart rooms only at a safe moment](184-server-rollout.md) | current |  |
+| 185 | [online code we don't maintain, removed](185-online-cleanup.md) | current |  |
+| 186 | [P2P as a race transport of the server's rooms (hub star, SFU fallback)](186-p2p-transport.md) | current |  |
+| 187 | [a racer whose race link delivers nothing no longer races alone](187-silent-race-link.md) | current |  |
+| 188 | [dual-source blending off on Intel GPUs](188-intel-dual-source.md) | current |  |
+| 189 | [Swap L1/L2 and R1/R2 per controller, and the game's codes on touch](189-shoulder-swap-touch-codes.md) | current |  |
+| 190 | [the online room's track list in Super Career order](190-room-track-order.md) | current |  |
+| 191 | [Android 10 (API 29) as the APK's minimum](191-android-10.md) | current |  |
+| 192 | [widescreen sprite width table and menu focal projection](192-widescreen-sprites-focal.md) | current |  |
+| 193 | [helicopters, birds and other scenery at the right speed at every frame rate](193-fast-scenery-high-fps.md) | current |  |
+| 194 | [Native VU (experimental), a Graphics setting on every platform](194-native-vu-option.md) | partly superseded | [198](198-native-vu-default.md) for off by default and "experimental": Native VU is the players' default; the emulated path is only the fallback, the setting's off and the browser's path |
+| 195 | [the phone's biggest remaining costs, measured and cut](195-phone-speed.md) | partly superseded | [198](198-native-vu-default.md) for the encoder cut on Mali GPUs: a picture stays in one encoder there, the cut lost the Mali-G52's device |
+| 196 | [smooth bilinear sprites at high resolution scale](196-native-rt-texture-scale.md) | current |  |
+| 197 | [the phone's vertex loops and palette path, Native VU off](197-phone-speed-2.md) | current |  |
+| 198 | [Native VU is the default](198-native-vu-default.md) | current |  |
+| 207 | [Native iOS Port (iPhone 17 Pro Max / ARM64, v0.7.7)](207-ios-port.md) | partly superseded | [216](216-ios-0712-analog-input.md) for 0.7.12 integration and analog input |
+| 208 | [iOS performance review](208-ios-performance-review.md) | partly superseded | [216](216-ios-0712-analog-input.md) for 0.7.12 integration and analog input |
+| 209 | [iOS stability review 2](209-ios-stability-review.md) | partly superseded | [216](216-ios-0712-analog-input.md) for 0.7.12 integration and analog input |
+| 210 | [iOS external display and immediate touch input](210-ios-tv-touch-refinements.md) | partly superseded | [216](216-ios-0712-analog-input.md) for 0.7.12 integration and analog input |
+| 211 | [iOS widescreen, TV cadence and live graphics](211-ios-wide-tv-live-graphics.md) | partly superseded | [216](216-ios-0712-analog-input.md) for 0.7.12 integration and analog input |
+| 212 | [iOS integration with v0.7.8](212-ios-upstream-078.md) | partly superseded | [216](216-ios-0712-analog-input.md) for 0.7.12 integration and analog input |
+| 213 | [Localização da interface iOS](213-ios-localization.md) | partly superseded | [216](216-ios-0712-analog-input.md) for 0.7.12 integration and analog input |
+| 214 | [iOS startup, touch controls and the inventory exit](214-ios-start-menu-and-wide-exit.md) | partly superseded | [216](216-ios-0712-analog-input.md) for 0.7.12 integration and analog input |
+| 215 | [iOS 0.7.9 and external launcher](215-ios-upstream-079-airplay.md) | partly superseded | [216](216-ios-0712-analog-input.md) for 0.7.12 integration and analog input |
+| 216 | [iOS 0.7.12 and progressive analog input](216-ios-0712-analog-input.md) | partly superseded | [217](217-ios-control-editor.md) for native controls UI and deadzone defaults |
+| 217 | [native iOS control placement and button bindings](217-ios-control-editor.md) | current |  |
 | 075 | no file: the portable-core plan was numbered 075 on its branch and merged as 081 | renumbered | see 081 |
 | 113 | no file: the delta-time clock work was numbered 113 on its branch; the mixer's VBLANK time is in 139 | renumbered | see 139 |
 <!-- index:end -->

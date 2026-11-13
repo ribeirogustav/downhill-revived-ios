@@ -2,6 +2,8 @@
    Behaviour reference: PCSX2 GSState.cpp and GSClut.cpp (GPL-3.0+).
    Each path keeps its tag across DMA boundaries, including partial qwords. */
 #include "gs.h"
+#include "gs_mesh.h"
+#include "gs_strip.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,6 +40,24 @@ void gs_reset(Gs *g)
     g->vertex.q = 1;
     g->privileged[GS_CSR / 16] = 0x551B4000;  /* GS revision, ID and empty FIFO */
     g->privileged[GS_IMR / 16] = 0x7F00;
+}
+
+/* One row of a CSM1 CT32 CLUT: its 16 words (a run of the page as it lies in memory, which holds
+   the row's entries 0 1 8 9 2 3 10 11 4 5 12 13 6 7 14 15) into entries `to` to `to + 15`, low
+   halves and high halves apart as g->clut keeps them. Returns how many halves changed. */
+static unsigned clut_row32(Gs *g, const uint32_t *words, unsigned to)
+{
+    uint32_t row[16];
+    memcpy(row, words, 8); memcpy(row + 2, words + 4, 8); memcpy(row + 4, words + 8, 8); memcpy(row + 6, words + 12, 8);
+    memcpy(row + 8, words + 2, 8); memcpy(row + 10, words + 6, 8); memcpy(row + 12, words + 10, 8); memcpy(row + 14, words + 14, 8);
+    uint16_t *low = &g->clut[to], *high = &g->clut[to + 256];
+    unsigned changed = 0;
+    for (unsigned i = 0; i < 16; i++) {
+        uint16_t l = (uint16_t)row[i], h = (uint16_t)(row[i] >> 16);
+        changed += (low[i] != l) + (high[i] != h);
+        low[i] = l; high[i] = h;
+    }
+    return changed;
 }
 
 static void load_clut(Gs *g, uint64_t tex)
@@ -84,9 +104,9 @@ static void load_clut(Gs *g, uint64_t tex)
         } else g->clut_memo.valid = 0;
         /* CSM1: the entries are distinct, so only the number of changed ones matters for
            state_version; counted without a branch per entry. */
-        uint16_t low[256] PS2_NO_AUTO_INIT, high[256] PS2_NO_AUTO_INIT;  /* written for every entry read */
-        unsigned first = 0, changed = 0;
+        unsigned changed = 0;
         if (cpsm & 2) {
+            uint16_t low[256] PS2_NO_AUTO_INIT;  /* written for every entry read */
             for (i = 0; i < count; i++) {
                 unsigned a = cbp * 256 + ((i & ~31u) + t16[i & 31]) * 2;
                 low[i] = (uint16_t)(g->vram[(a & (GS_VRAM_SIZE - 1)) / 4] >> ((a & 2) * 8));
@@ -97,17 +117,20 @@ static void load_clut(Gs *g, uint64_t tex)
                 *entry = low[i];
             }
         } else {
-            if (count == 256) first = start, start = 0;
-            for (i = first; i < count; i++) {
-                unsigned src = count == 256 ? (i & 0x80) | (i & 0x10) << 2 | (i & 0x60) >> 1 | t32[i & 15] : t32[i];
-                uint32_t value = g->vram[(cbp * 64 + src) & (GS_VRAM_SIZE / 4 - 1)];
-                low[i] = (uint16_t)value; high[i] = (uint16_t)(value >> 16);
+            /* CT32, a row of 16 entries at a time (clut_row32), read where the words lie unless
+               the run wraps at the end of memory. 16 entries are the run's first row, into CSA's
+               entries; of 256 the rows below CSA's stay, and row r3 r2 r1 r0 comes from the
+               run's row r3 r0 r2 r1 (the 16 x 16 pixels' block order). */
+            uint32_t wrapped[256] PS2_NO_AUTO_INIT;  /* written for every word read */
+            const uint32_t *words = g->vram + base / 4;
+            if (base + bytes > GS_VRAM_SIZE) {
+                for (i = 0; i < count; i++) wrapped[i] = g->vram[(cbp * 64 + i) & (GS_VRAM_SIZE / 4 - 1)];
+                words = wrapped;
             }
-            for (i = first; i < count; i++) {
-                uint16_t *lo = &g->clut[start + i], *hi = &g->clut[start + i + 256];
-                changed += (*lo != low[i]) + (*hi != high[i]);
-                *lo = low[i]; *hi = high[i];
-            }
+            if (count == 16) changed = clut_row32(g, words, start);
+            else
+                for (unsigned row = start / 16; row < 16; row++)
+                    changed += clut_row32(g, words + ((row & 8) | (row & 1) << 2 | (row & 6) >> 1) * 16, row * 16);
         }
         g->state_version += changed;
         g->clut_writes += changed;
@@ -560,6 +583,49 @@ static int strip_regs(uint64_t regs, unsigned nreg)
     return 1;
 }
 
+void (*gs_strip_hook)(Gs *gs, const uint32_t *words, unsigned count);
+
+/* loops whole loops of a tag in the game's own layout (gs_strip.h: ST, RGBAQ, XYZF2) into an
+   empty strip window, without a vertex list (finding 197): what packed_strip's loop leaves is
+   worked out from the packet (the counters from the ADC bits, the registers and the window from
+   the last vertices written), then gs_strip_hook draws the triangles from the packet itself. */
+static void packed_strip_game(Gs *g, GsPath *p, const uint32_t *w, size_t loops)
+{
+    const uint32_t *end = w + (loops - 1) * GS_STRIP_WORDS;   /* the last vertex */
+    size_t kicks = loops > 2 ? loops - 2 : 0;                 /* the third vertex on makes a triangle */
+    unsigned skips = 0;
+    for (const uint32_t *v = w; v <= end; v += GS_STRIP_WORDS) skips += gs_strip_adc(v);
+    g->adc_skips += skips;
+    g->kicks += kicks;
+    /* vertex_kick counts a draw for each kick without ADC: not the first two vertices' */
+    g->vram_epoch += kicks - (skips - gs_strip_adc(w) - (loops > 1 ? gs_strip_adc(w + GS_STRIP_WORDS) : 0));
+    g->strip_parity ^= (unsigned)kicks & 1;
+    /* XYZF2 and XYZF3 as the last vertex without and with ADC wrote them */
+    for (unsigned adc = 0; adc < 2; adc++) {
+        const uint32_t *v = end;
+        while (v >= w && (unsigned)gs_strip_adc(v) != adc) v -= GS_STRIP_WORDS;
+        if (v >= w)
+            g->reg[adc ? GS_XYZF3 : GS_XYZF2] = (v[8] & 65535) | (uint64_t)(v[9] & 65535) << 16 |
+                                                (uint64_t)(v[10] >> 4 & 0xFFFFFF) << 32 | (uint64_t)(v[11] >> 4 & 255) << 56;
+    }
+    GsVertex before = g->vertex;
+    gs_strip_vertex(end, &before, &g->vertex);
+    p->q = end[2];
+    g->reg[GS_RGBAQ] = g->vertex.rgba | (uint64_t)end[2] << 32;
+    g->reg[GS_ST] = end[0] | (uint64_t)end[1] << 32;
+    /* The window vertex_kick leaves: the last two after a kick (its third slot holds the last one
+       kicked), else the vertices so far. */
+    if (kicks) {
+        gs_strip_vertex(end - GS_STRIP_WORDS, &before, &g->vertices[0]);
+        g->vertices[1] = g->vertices[2] = g->vertex;
+        g->vertex_count = 2;
+        gs_strip_hook(g, w, (unsigned)loops);
+    } else {
+        for (size_t k = 0; k < loops; k++) gs_strip_vertex(w + k * GS_STRIP_WORDS, &before, &g->vertices[k]);
+        g->vertex_count = (unsigned)loops;
+    }
+}
+
 /* loops whole loops of such a tag while PRIM is a triangle strip: each register as packed()
    writes it, and each vertex kicked as vertex_kick would (the counters, ADC skips, the strip's
    parity and its last vertices), with the triangles handed to draw_strip in batches instead of
@@ -568,6 +634,10 @@ static int strip_regs(uint64_t regs, unsigned nreg)
    them. */
 static void packed_strip(Gs *g, GsPath *p, uint64_t regs, unsigned nreg, const uint32_t *w, size_t loops)
 {
+    if (gs_strip_hook && nreg == 3 && (regs & 0xFFF) == GS_STRIP_REGS && !g->vertex_count) {
+        packed_strip_game(g, p, w, loops);
+        return;
+    }
     enum { BATCH = 256 };
     /* 10 KB a call, thousands of calls a field: entries are written before they are read */
     GsVertex list[BATCH + 2] PS2_NO_AUTO_INIT;
@@ -731,6 +801,79 @@ void gs_feed(Gs *g, unsigned path, const uint32_t *words, size_t count)
             p->have = 0; gif_qword(g, path, p);
         }
     }
+}
+
+int gs_mesh_mode;
+void (*gs_mesh_hook)(Gs *gs, const uint32_t *words, size_t count);
+unsigned gs_vu_shadow;
+int gs_mesh_setting = -1;
+
+/* gs_mesh.h: a word of [a, a + n) without case */
+static int mesh_word(const char *a, size_t n, const char *word)
+{
+    size_t i = 0;
+    for (; i < n && word[i]; i++) {
+        char c = a[i] >= 'A' && a[i] <= 'Z' ? (char)(a[i] - 'A' + 'a') : a[i];
+        char w = word[i] >= 'A' && word[i] <= 'Z' ? (char)(word[i] - 'A' + 'a') : word[i];
+        if (c != w) return 0;
+    }
+    return i == n && !word[i];
+}
+
+unsigned gs_mesh_parse(const char *s)
+{
+    static const char *const names[GS_MESH_LOOPS] = {GS_MESH_LOOP_NAMES};
+    static const char *const on[] = {"on", "1", "true", "yes"};
+    _Static_assert(sizeof names / sizeof *names == GS_MESH_LOOPS, "GS_MESH_LOOP_NAMES");
+    if (!s) return 0;
+    while (*s == ' ' || *s == '\t') s++;
+    size_t list = strcspn(s, ":");
+    size_t end = list;
+    while (end && (s[end - 1] == ' ' || s[end - 1] == '\t')) end--;
+    for (unsigned i = 0; i < sizeof on / sizeof *on; i++)
+        if (mesh_word(s, end, on[i])) return GS_MESH_ALL;
+    unsigned loops = 0;
+    for (const char *t = s; t < s + list;) {
+        size_t len = strcspn(t, ",:");
+        if (mesh_word(t, len, "prelit")) loops |= GS_MESH_PRELIT;
+        if (mesh_word(t, len, "lit")) loops |= GS_MESH_LIT;
+        if (mesh_word(t, len, "shadow")) loops |= GS_MESH_SHADOW_LOOPS;
+        if (mesh_word(t, len, "all")) loops |= GS_MESH_ALL;
+        for (unsigned p = 0; p < GS_MESH_LOOPS; p++)
+            if (mesh_word(t, len, names[p])) loops |= 1u << p;
+        if (!len) break;
+        t += len + (t[len] == ',');
+    }
+    if (!loops) return 0;
+    const char *flags = s + list;
+    if (strstr(flags, ":skip")) loops |= GS_MESH_FORCE_SKIP;
+    else if (strstr(flags, ":shadow")) loops |= GS_MESH_FORCE_SHADOW;
+    if (strstr(flags, ":gpuclip")) loops |= GS_MESH_GPU_CLIP;
+    return loops;
+}
+
+void gs_mesh_setting_read(void)
+{
+    __atomic_store_n(&gs_mesh_setting, (int)gs_mesh_parse(getenv("DHD_NATIVE_VU1")), __ATOMIC_RELEASE);
+}
+
+void gs_mesh(Gs *g, const uint32_t *words, size_t count)
+{
+    const GsMeshHeader *h = (const GsMeshHeader *)words;
+    if (count * 4 < sizeof *h || h->magic != GS_MESH_MAGIC) return;
+    g->source_path = 1;
+    if (!(h->flags & GS_MESH_SHADOW)) {
+        /* what the batch's packet writes before its vertices: the A+D tag's registers (packed()'s
+           A+D, gs_write for these), then the strip tag's PRIM (gif_qword with PRE) */
+        if (h->flags & GS_MESH_TEXTURE) {
+            for (unsigned i = 0; i < 4; i++) gs_write(g, h->ad[i][2] & 127, h->ad[i][0] | (uint64_t)h->ad[i][1] << 32);
+            g->packets[0]++;
+        }
+        gs_write(g, GS_PRIM, h->prim);
+        g->packets[0]++;
+    }
+    g->vram_epoch++;
+    if (gs_mesh_hook) gs_mesh_hook(g, words, count);
 }
 
 int gs_xgkick(Gs *g, const uint32_t *memory, unsigned qword)

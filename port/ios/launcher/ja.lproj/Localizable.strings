@@ -168,7 +168,7 @@
 "Controller Stick Deadzone" = "コントローラーのデッドゾーン";
 
 "Customize Controls" = "操作をカスタマイズ";
-"Arrange and remap touch controls" = "タッチ操作の配置と割り当て";
+"Arrange and remap touch controls" = "タッチ操作の配置を編集";
 "Drag controls, choose their actions and save a layout for each orientation." = "操作をドラッグしてアクションを選び、画面の向きごとに配置を保存します。";
 "Physical Controllers" = "物理コントローラー";
 "Controller button bindings" = "コントローラーのボタン割り当て";
@@ -218,9 +218,16 @@
 
 "Control options" = "操作ボタンの設定";
 "Drag to move. Rotate the device to edit the other orientation." = "ドラッグして移動します。別の向きを編集するには端末を回転してください。";
+"Tap to select. Drag to move. Rotate to change layout." = "タップして選択、ドラッグして移動。端末を回転するとレイアウトが切り替わります。";
 
 "Undo" = "元に戻す";
 "Redo" = "やり直す";
 "Collapse tools" = "ツールを折りたたむ";
 "Expand tools" = "ツールを展開";
 "Hidden" = "非表示";
+
+// Individual touch control sizing (25% to 600%).
+"Smaller" = "小さく";
+"Larger" = "大きく";
+"Reset to 100%" = "100%に戻す";
+"Drag controls and set each button's size individually (25% to 600%). Save separate layouts for portrait and landscape." = "ボタンをドラッグし、各ボタンのサイズを個別に25%から600%まで調整できます。縦向きと横向きで別々にレイアウトを保存できます。";

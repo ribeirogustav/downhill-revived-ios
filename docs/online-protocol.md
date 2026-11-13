@@ -1,4 +1,4 @@
-# Online protocol (version 3)
+# Online protocol (version 4)
 
 The wire protocol between the PC port (`port/net/`) and the online server (`online/server/`,
 Cloudflare Workers + Durable Objects). The plan behind it is `docs/ONLINE-PLAN.md`.
@@ -8,8 +8,8 @@ Cloudflare Workers + Durable Objects). The plan behind it is `docs/ONLINE-PLAN.m
 - The server runs no game logic. Race frames use the SFU (state sync: every
   PC runs its own race and shows the others' riders from their snapshots, findings 041 and 044)
   and reports players who leave.
-- `PROTOCOL = 3`. It is in `hello`; the endpoint URL remains `/v1/`. Any incompatible change raises
-  it; the server refuses clients with another number.
+- `PROTOCOL = 4` (since 0.7.13, the oldest release the server lets in). It is in `hello`; the endpoint URL remains `/v1/`.
+  Any incompatible change raises it; the server refuses clients with another number.
 
 ## Endpoints
 
@@ -20,14 +20,14 @@ host.
 
 | Method | Path | What |
 |---|---|---|
-| WebSocket | `/v1/rooms/new` | Create a room; this socket becomes its host. |
+| WebSocket | `/v1/rooms/new` | Create a room; this socket becomes its host. `?region=<hint>` picks where it runs (Region, below); `?transport=p2p` makes a P2P room (P2P rooms, below). |
 | WebSocket | `/v1/rooms/<CODE>` | Join the room with that join code (case-insensitive). |
 | GET | `/v1/lobbies` | Public lobby list (JSON, below). |
-| GET | `/v1/health` | `{"ok":true,"protocol":3,"minVersion":"0.1.0","online":true}` (`online` and `message`: the kill switch, below) |
+| GET | `/v1/health` | `{"ok":true,"protocol":4,"minVersion":"0.7.13","online":true}` (`online` and `message`: the kill switch, below) |
 | GET | `/v1/latest` | The newest release's `latest.json` (the launcher's backup update check; below). |
 
-Join codes are 6 characters from `23456789ABCDEFGHJKMNPQRSTUVWXYZ` (no `0 O 1 I L`). Clients
-upper-case what the user types and reject characters outside that alphabet.
+Join codes are 6 characters from `23456789ABCDEFGHJKMNPQRSTUVWXYZ` (no `0 O 1 I L`), a P2P room's 7.
+Clients upper-case what the user types and reject characters outside that alphabet.
 
 The client sends `hello` as its first message, within 10 seconds of connecting. Before `hello`
 the server sends nothing.
@@ -37,17 +37,17 @@ the server sends nothing.
 A refusal is one text frame followed by a close:
 
 ```json
-{"type":"error","code":"iso_mismatch","message":"Your ISO does not match the host's (US SCUS-97177 expected)."}
+{"type":"error","code":"iso_mismatch","message":"Your game ISO does not match the host's."}
 ```
 
 | `code` | Close code | When |
 |---|---|---|
 | `bad_message` | 4000 | Unparseable JSON, unknown type, invalid `hello`, anything before `hello`. |
-| `protocol_mismatch` | 4001 | `hello.protocol` is not the server's `PROTOCOL`. |
+| `protocol_mismatch` | 4001 | `hello.protocol` is not the server's `PROTOCOL` (checked after `client_outdated`, so an old release gets Update Now). |
 | `version_mismatch` | 4002 | `hello.version` differs from the host's. |
 | `iso_mismatch` | 4003 | `hello.isoSha256` (the disc image's game files hash, finding 098) differs from the host's. |
 | `room_full` | 4004 | No free slot. |
-| `room_started` | 4005 | The race is running; late joins are not supported. |
+| `room_started` | (4005) | Non-fatal only: a `start`, or a setting, pick or Ready for a rider in the running race. Joins are accepted while a race runs (the newcomer waits for the next). |
 | `room_not_found` | 4006 | No room has this code (or it was closed). |
 | `kicked` | 4007 | The host removed this player. |
 | `hello_timeout` | 4008 | No `hello` within 10 seconds. |
@@ -60,18 +60,19 @@ A refusal is one text frame followed by a close:
 ### Minimum client version
 
 The server refuses releases older than its `MIN_VERSION` (a Worker variable in
-`online/server/wrangler.jsonc`, `MAJOR.MINOR.PATCH`; default `0.1.0`, every release). Since
-0.2.0 the client sends its release in `hello.clientVersion` (`port/include/version.h`). A
-`hello` without it is 0.1.0, which did not send one; an unparseable one counts as outdated. The
-refusal carries both versions:
+`online/server/wrangler.jsonc`, `MAJOR.MINOR.PATCH`; without one, 0.7.13, the first release of
+protocol 4). The client sends its release in `hello.clientVersion` (`port/include/version.h`). A
+`hello` without one, or with one that is not a version, counts as outdated. This check comes
+before the protocol's, so an old release that speaks an older protocol is refused the same way.
+The refusal carries both versions (`clientVersion` `""` when the hello named none):
 
 ```json
 {"type":"error","code":"client_outdated","message":"A new version is out. Update to play online.",
- "minVersion":"0.2.0","clientVersion":"0.1.0"}
+ "minVersion":"0.7.13","clientVersion":"0.7.12"}
 ```
 
-0.1.0 knows no `client_outdated`: like any refusal it shows `message` on the ONLINE screen.
-0.2.0 and later show the same text and add an **Update Now** row (finding 054).
+Every release shows `message` on the ONLINE screen; since 0.2.0 the game adds an **Update Now**
+row (finding 054).
 
 ### The kill switch (finding 161)
 
@@ -92,8 +93,7 @@ The refusal is:
 ```
 
 then close 4010. The operator may give another text (`--message`, within about 45 characters, the
-ONLINE screen's footer). Every release shows a refusal's `message`, so 0.7.11 and older need
-nothing new. `/v1/health` adds `"online":false` and the `message`; `/v1/lobbies` lists no rooms
+ONLINE screen's footer). Every release shows a refusal's `message`. `/v1/health` adds `"online":false` and the `message`; `/v1/lobbies` lists no rooms
 and adds the same two fields. An open room starts no race: its countdown is dropped and `start`
 answers the non-fatal `online_off` error (so does a countdown that runs out, to the whole room). A
 race already running goes on to its finish.
@@ -117,7 +117,8 @@ limit of their own.
 ### Bans and the moderation log (finding 161)
 
 When a player enters a room (a new member or a rejoin) the server writes a row to its moderation
-log: the time, the room code, the member id, the name, `hello.clientVersion`, the country
+log: the time, the room code (a P2P room's by its first two characters, as in the server's own
+logs: its code lets anyone in), the member id, the name, `hello.clientVersion`, the country
 (Cloudflare's), a keyed hash of the address (HMAC-SHA-256 with a Worker secret; the address
 itself is never stored or logged) and `hello.installId`. Rows older than 14 days are deleted
 every day. The operator bans a row's address hash and/or install id (with an expiry, or until
@@ -144,10 +145,11 @@ use the same `error` frame **without** a close; the client just shows `message`.
 
 ```jsonc
 // First message, required. name: 1-24 characters.
-{"type":"hello","protocol":3,"version":"dhd-port 0.2.0 1a2b3c4d5e6f7a8b","clientVersion":"0.2.0",
- "isoSha256":"<64 lowercase hex>","name":"Rider","features":["countdown"]}  // features: optional
-// A rejoin (Limits, below) adds the token from this room's welcome: "rejoinToken":"<32 hex>"
-// From the release after 0.7.11 (finding 161): "installId":"<32 lowercase hex>", optional (below)
+{"type":"hello","protocol":4,"version":"dhd-port 0.2.0 1a2b3c4d5e6f7a8b","clientVersion":"0.2.0",
+ "isoSha256":"<64 lowercase hex>","name":"Rider","features":["countdown","session","race_rejoin"]}  // features: optional
+// A rejoin (Limits, below) adds the token from this room's welcome: "rejoinToken":"<32 hex>",
+// and during a race (finding 175) the startAt of the race it knows: "raceStartAt":1734000003000
+// "installId":"<32 lowercase hex>" (finding 161), optional (below)
 
 // Host only. Every field optional; omitted fields keep their value.
 {"type":"settings","track":3,"laps":2,"seed":12345,"public":true,"maxPlayers":10,"roomName":"Friday race"}
@@ -162,32 +164,52 @@ use the same `error` frame **without** a close; the client just shows `message`.
 {"type":"pong","s":1734000000123}                   // echo of a server ping, see below
 {"type":"ping","t":12345.6}                          // optional client-side ping; the server answers "pong"
 {"type":"end"}                                       // host only: race over, back to the lobby
+// The race's start moment (server ms), from the game that names it (finding 187), only to a server
+// whose welcome lists "race_go":
+{"type":"race_go","race":1734000008000,"at":1734000021500}
 ```
 
 - `track`, `laps`, `rider`, `bike`: integers 0..255 whose meaning belongs to the game (track
   table index, rider and bike table indices). `laps` 0 = the track's default.
 - `seed`: unsigned 32-bit integer. If the host never sets one, the server draws one at `start`.
 - `maxPlayers`: 2..10, default 10. It can't go below the current member count.
-- `public`: listed in `/v1/lobbies` while not started and not full. Default `false`
-  (private, join code only).
+- `public`: listed in `/v1/lobbies` (Lobby list, below). Default `false` (private, join code
+  only).
 - `installId`: a random id the game makes once and keeps in dhd.ini (`install_id`), the same in
   every hello of that copy of the game, for the server's moderation log and bans (Refusals,
-  above). Optional: releases before it send none and join as before; one that is not 32 lowercase
-  hex digits counts as none. The server sends it to nobody. The game never writes it to dhd.log.
-- `features`: what the client understands beyond version 1. `"countdown"`: the room may start
-  the race by itself (below).
+  above). Optional (the browser sends none); one that is not 32 lowercase hex digits counts as
+  none. The server sends it to nobody. The game never writes it to dhd.log.
+- `features`: what the client can do. `"race_rejoin"` (finding 175): the game keeps racing over
+  the SFU (or a P2P room's star) while its room connection is down and rejoins its race (Limits,
+  below). `"race_go"` (finding 187): the game takes its race's start moment from the room
+  (`race_go`, below). `"p2p"` (finding 186): it races in P2P rooms (below), which take no game
+  without it. Games send
+  `"countdown"` and `"session"` too, which asked older servers for the race room rules; every
+  room has them since finding 185, and the server ignores both.
+- `race_go` (finding 187): the moment every game holds its countdown for, the same one the host's
+  START event carries over the race link (port/hle/online.c `start_step`). The room keeps the first
+  one per race from the racer whose game names it (the race's host, or once it left, the lowest slot
+  still racing) when `at` is at or after `startAt` and at most 10 minutes later, and sends it to
+  every racer whose hello listed `"race_go"` (again in a rejoin's catch-up). Anything else is
+  dropped.
 
 ### Server → client
 
 ```jsonc
 // Answer to hello: who you are in this room, and where you and the room are (Region, below).
-{"type":"welcome","protocol":3,"code":"K7QX2M","memberId":2,"host":false,"serverTime":1734000000000,
+{"type":"welcome","protocol":4,"code":"K7QX2M","memberId":2,"host":false,"serverTime":1734000000000,
  "edgeColo":"WAW","country":"PL","continent":"EU","roomColo":"FRA","roomRegion":"EU",
+ "roomArea":"EU EAST","roomChosen":false,
  "rejoinToken":"<32 hex>"}  // this member's rejoin token: only this client gets it (Limits, below)
+// Whether the room holds a Realtime session for this member (finding 177): "sfu":"ready" (a rejoin:
+// keep the association) or "sfu":"setup" (offer one). A rejoin into the member's running race
+// (finding 175) adds the race: "race":{"startAt":1734000003000}
+// What the server takes beyond protocol 4 (finding 187): "features":["sfu_silent","race_go"]. A
+// game sends sfu_silent and race_go only to a server that lists them; 0.7.13 ignores the field.
 
 // Where the room runs and each member's region (never their country): after every join and when
 // the room learns its colo (Region, below).
-{"type":"where","region":"EU","colo":"FRA","members":[{"id":0,"region":"EU"},{"id":2,"region":"NA"}]}
+{"type":"where","region":"EU","area":"EU EAST","colo":"FRA","members":[{"id":0,"region":"EU"},{"id":2,"region":"NA"}]}
 
 // Full room snapshot. Sent after every change and every ~2 s with fresh ping numbers.
 {"type":"room","code":"K7QX2M","hostId":0,"roomName":"Friday race","public":true,"maxPlayers":10,
@@ -197,7 +219,7 @@ use the same `error` frame **without** a close; the client just shows `message`.
             {"id":2,"name":"Bo","ready":false,"rider":0,"bike":0,"rttMs":null,"choosing":true}],
  "countdownEndsAt":null,"serverTime":1734000000000}
 
-// Server-timestamped ping, every 2 s while in the lobby. Echo "s" back unchanged in a "pong".
+// Server-timestamped ping, every 2 s, in a race too. Echo "s" back unchanged in a "pong".
 {"type":"ping","s":1734000000123}
 
 // Answer to a client "ping": "t" echoed, serverTime added (use it to estimate the clock offset).
@@ -210,10 +232,18 @@ use the same `error` frame **without** a close; the client just shows `message`.
  "serverTime":1734000005000,"startAt":1734000008000}
 
 // A racer left or dropped. The host's game hands their rider to its AI.
-{"type":"left","slot":1,"memberId":2,"reason":"disconnect"}   // or "leave"/"kicked"
+{"type":"left","slot":1,"memberId":2,"reason":"left"}   // or "finished", "gave_up", "time_up"
+// (Finishes and return, below)
 
-// Host ended the race; the room is a lobby again (ready flags cleared).
-{"type":"ended"}
+// The race is over: "done" when every racer finished or is out, "void" when the host ended it.
+{"type":"ended","reason":"done"}
+
+// The race's start moment (finding 187), to racers whose hello listed "race_go" (Client → server).
+{"type":"race_go","race":1734000008000,"at":1734000021500}
+
+// The room restarts for new code (finding 184, below): sent to every member just before it closes
+// their sockets with 1012 "server_update". 0.7.13 and older ignore the type.
+{"type":"notice","code":"server_update","message":"Server updated, reconnecting..."}
 ```
 
 - **Member ids** are fixed for the life of a connection and never reused in a room. **Slots**
@@ -226,11 +256,35 @@ use the same `error` frame **without** a close; the client just shows `message`.
   The game itself starts every PC's countdown together on the server's clock once all have
   loaded (port/hle/online.c).
 
+### A room restarting for new code (finding 184)
+
+A deploy gives a busy room new code only when the room restarts itself at a safe moment (no race,
+no locked grid or countdown, no Realtime setup in flight, no automatic race due within 10 s:
+`online/server/src/rollout.ts`). The room saves its state, sends `notice` (above) to every member,
+closes every socket with **1012** (`server_update`) and resets. A game treats it like any drop
+below 4000: it rejoins with its `rejoinToken` (finding 137) after its usual backoff (first try
+after 1 s) and gets its member back: id, host, rider, bike, Ready and its Realtime session
+(`"sfu":"ready"` in the welcome, finding 177). A connection that arrives during the restart's
+quarter second gets HTTP 503 and is tried again by the rejoin.
+
+- **0.7.13 and older** ignore `notice` (an unknown type) and rejoin; their room page shows no
+  footer meanwhile.
+- **Newer games** keep `message` (printable ASCII; `NetLobby.notice`) and show it as the room
+  page's footer while they rejoin; the welcome clears it.
+- The Worker passes its own version to the room (`x-dhd-worker-version: <id> <upload time>`,
+  dropped if a client sent one); an older room ignores the header. Nothing a client sends or
+  receives changed otherwise.
+
 ## Race (binary frames, little-endian)
 
-At race start each racing member establishes one native WebRTC association to Cloudflare Realtime
-SFU. It is discarded at race end. Each player publishes `state` (unordered, maxRetransmits 0) and
-`events` (reliable, ordered), subscribing to the same channels of all other members. Channel
+Each member's game establishes one native WebRTC association to Cloudflare Realtime SFU when it
+joins the room, and keeps it for its whole stay, across races (finding 177; before, one per race,
+built from the start message). Each player publishes `state` (unordered, maxRetransmits 0) and
+`events` (reliable, ordered) once, and is subscribed to the same channels of the other racers of
+each race it rides (the room asks the same policy for each subscription); subscriptions stay
+across races, so a race adds only the pairs that are missing. Cloudflare forwards a subscription ordered and reliable
+whatever it was asked (finding 173), so the client's SCTP stack delivers each complete `state`
+message at once without regard to the sender's ordering (`port/render/vendor/sctp-proto`). Channel
 allocations identify members; `start.players` maps members to race slots. The receiver corrects
 byte 1 from that mapping. WebSocket binary frames only carry PING/PONG; all other types are dropped.
 
@@ -238,27 +292,86 @@ DataChannel messages add an 8-byte little-endian unsigned prefix containing that
 `start.startAt` value in ms. The original type/slot/payload follows it unchanged. This is a race
 identifier, not a game clock or tick agreement. Endpoints discard older races' messages. Early
 reliable EVENTs wait in a bounded queue until their matching WebSocket start is delivered; future
-STATEs can be dropped. WebSocket callbacks and SFU callbacks are delivered on one network thread,
-so the game sees start before buffered events. Channels close at race end.
+STATEs can be dropped; a race's frames after its `ended` are dropped. WebSocket callbacks and SFU
+callbacks are delivered on one network thread, so the game sees start before buffered events. At
+each start the client begins that race's own state (the racers, the acknowledgement, queued
+frames, flood counters); the association and its channels stay.
 
 ### SFU signaling (private JSON on the room WebSocket)
 
-- Client sends `{"type":"sfu_offer","sdp":"<its own offer>"}` after start. The DO calls
-  `sessions/new` with that offer as `sessionDescription`. The answer is
-  `{"type":"sfu_answer","sdp":"<this session's SFU answer>"}`, sent only to its owner.
-  The offer includes the SCTP transport; no separate `datachannels/establish` call is used.
-- Once WebRTC connects, client sends `{"type":"sfu_connected"}`. The DO publishes the two
-  channels, then subscribes each connected member to every other publisher.
+A member's session lives as long as its stay in the room (finding 177):
+
+- After its `welcome` (`"sfu":"setup"`), the client sends `{"type":"sfu_offer","sdp":"<its own
+  offer>"}`. The DO calls `sessions/new` with that offer as `sessionDescription`. The answer is
+  `{"type":"sfu_answer","sdp":"<this session's SFU answer>"}`, sent only to its owner. The offer
+  includes the SCTP transport; no separate `datachannels/establish` call is used. A later
+  `sfu_offer` replaces the member's session: the room closes the old one first (its channels, the
+  others' subscriptions to it with `sfu_closed`, its TURN credentials). A member may offer 6 times
+  in 5 minutes (`bad_value` after that); the client offers again after a failure, a lost
+  association or for a TURN renewal (below), pausing 1 s, then twice as long each time up to a
+  minute, until one connects.
+- Once WebRTC connects, the client sends `{"type":"sfu_connected"}`. The DO publishes the two
+  channels (one call); between races that is all.
+- Subscriptions are made for a race's racers, in one coalesced pass: at the grid's lock, during
+  the countdown before the start message (the pre-setup), for every grid member whose session is
+  up; at the start for what is still missing (a racer that connected since); and when a racer of
+  the coming or running race publishes. Each subscriber gets one `datachannels/new` call per pass
+  naming every publisher it lacks (finding 182), the subscribers in parallel. They stay after the race. At a race's start the subscriptions of members
+  outside it are closed (`sfu_closed`), so nobody is sent race frames it would drop; they come back
+  at the member's next grid.
 - Each endpoint receives only its own allocations, in one or more messages:
   `{"type":"sfu_channels","channels":[{"memberId":2,"name":"state","channelId":10,"local":false}]}`.
   The endpoint creates negotiated channels with these IDs and the delivery policies above.
   `local:true` means its own publication. Session IDs and app credentials stay on the server.
-- After all allocated channels open, each client sends `{"type":"sfu_ready"}`. The DO replies
-  to all racing members only after every member acknowledges. Until then, race frames stay
-  queued locally so reliable events cannot precede a subscriber.
+  Cloudflare gives a closed channel's ID to the next allocation on that session at once: the client
+  makes the new channel once the old one's stream reset is done (the vendored sctp-proto takes
+  Cloudflare's stream resets in order, `port/render/vendor/sctp-proto/PATCH.md`). A channel still
+  not open 10 s after its allocation fails the association, and the client offers a new session.
+- After the race's `start`, once this game's own channels and every other racer's are open, the
+  client sends `{"type":"sfu_ready","race":<startAt>}` (an older race's counts for nothing). The DO
+  replies `{"type":"sfu_ready","race":<startAt>}` to all racers only after every racer acknowledged
+  and every pair of racers is subscribed both ways. Until then, race frames stay queued locally so
+  reliable events cannot precede a subscriber. A room whose racers were connected before the grid
+  locked has nothing left to do at the start: the release follows the acknowledgements.
+- A member back with its rejoin token (findings 137, 175) gets `"sfu":"ready"` in the welcome when
+  the room still holds its session: its client keeps its association, sends what it said while the
+  room connection was down, and gets all its allocations at once:
+  `{"type":"sfu_channels","full":true,"channels":[...]}`. Its client keeps a channel only if its
+  whole allocation is listed (id, member, name, direction) and the SFU hasn't reset its stream,
+  closes the others (it missed their `sfu_closed`, or Cloudflare gave their id to another allocation
+  meanwhile, finding 179) and opens the listed ones it lacks. Then, in its race, `sfu_ready` if the
+  race's traffic was released and it had acknowledged. A client without a
+  usable association (it lost it, or never got its answer) offers a new session, which replaces
+  the room's.
 - Departures and replacements send `{"type":"sfu_closed","channelIds":[10,12]}` only to
-  affected endpoints, after closing those allocations through the API (a subscription that
-  doesn't close is announced all the same and closes with its subscriber's session).
+  affected endpoints, after closing those allocations through the API. A subscription that
+  doesn't close is announced all the same, stays on its subscriber's session (stored with the room)
+  and is tried again by the subscription pass 5, 10, 20 and 40 s later; if it still forwards a live
+  publication after that, its subscriber's session is reset (`sfu_reset`) once the subscriber is
+  outside the running race or locked grid; one to no live publication is forgotten (finding 179).
+- A session the room gives up on (an API call on it failed, or a racer whose channels did not open
+  by the setup deadline) is closed, and its owner hears `{"type":"sfu_reset"}`: its client drops
+  the association and offers a new session after its pause.
+- A race link that delivers nothing (finding 187). A game whose race traffic was released but that
+  has received no race frame from any other racer 8 s after the race's start moment (`race_go`;
+  and after its release, for a new session) sends `{"type":"sfu_silent","race":<startAt>}`, once
+  per association and race, to a server whose welcome lists `"sfu_silent"`. From the moment every
+  racer still in the race sends its ride; before it a racer may still be on its way to the load
+  screen, so no game reports without it. The moment comes over the room to every racer, so a game
+  whose link brings nothing has it too (and never starts alone). The room gives that racer a new session in its
+  race (`sfu_reset`; the others hear `sfu_closed` for its old publication and get the new one in
+  `sfu_channels`), the race's setup checks wait for it, and once it is subscribed both ways and
+  acknowledges, `sfu_ready` comes again for it alone. Not up 20 s later (the room's
+  `SFU_RENEW_MS`), or silent again on its new session, it is out of the race as at the setup
+  deadline (`error` "Realtime connection failed: out of the race.", the others hear `left`).
+  Cloudflare's listing can't show this: a dead stream id is listed `active`.
+- Subscriptions a game never heard of (finding 187). A subscription closed on a session whose game
+  never had it (an aborted call's, closed by the inspection above) leaves its stream id dead on that
+  session: Cloudflare resets the stream, the game has nothing to reset back (its SCTP stack resets
+  its own outgoing stream only for a stream it has), Cloudflare's side never finishes closing, and
+  the next allocation on that id answers 200 and forwards nothing. The room makes no subscription on
+  such a session any more and replaces it (`sfu_reset`): at once for a member outside a running
+  race, in its race (as above) for a racer that needs a pair it lacks, else once its race is over.
 - Teardown goes on past a failed close or revoke. A session's channels or a TURN username that
   did not close is kept in the room's pending cleanup, stored apart from the members (it outlives
   the member and the room), and tried again by the room's alarm: after 5 s, then twice as long
@@ -267,21 +380,30 @@ so the game sees start before buffered events. Channels close at race end.
   session).
 - TURN over TLS, for networks that block UDP (finding 158, round 4). The client tries UDP to the
   SFU first. If its association has not connected 2 s after `sfu_answer`, it sends
-  `{"type":"sfu_turn"}`. The DO accepts that once per member per race, only from a racer with an
-  SFU session in the running race. It mints TURN credentials through Cloudflare's TURN API
-  (`generate-ice-servers`, TTL 1 hour, `customIdentifier` `room-<CODE>-m<memberId>`, no personal
-  data) and sends them to that member only:
+  `{"type":"sfu_turn"}` (at once, when the association it replaces had used TURN). The DO accepts
+  that once per session, only from a member with a session. It mints TURN credentials through
+  Cloudflare's TURN API (`generate-ice-servers`, TTL 1 hour, `customIdentifier`
+  `room-<CODE>-m<memberId>`, no personal data) and sends them to that member only:
   `{"type":"sfu_turn","urls":["turns:turn.cloudflare.com:5349?transport=tcp","turns:turn.cloudflare.com:443?transport=tcp"],"username":"<hex>","credential":"<hex>"}`
   (`urls`: the `turns:` entries only). The client connects with TLS to the port-443 entry (the
   others are fallbacks), takes a relayed address (TURN Allocate, ChannelBind to the SFU's
   candidates, ChannelData over the stream) and gives it to ICE as a relayed candidate. The SFU
   sees the TURN service's address, never the player's. The DO revokes the credentials when that
-  member's SFU session is cleared (race end, retire, leaving); a second `sfu_turn` in the race
-  is a `bad_value` error. Clients accept `turns:` servers on `turn.cloudflare.com` only.
+  member's session ends; a second `sfu_turn` for one session is a `bad_value` error. Clients accept
+  `turns:` servers on `turn.cloudflare.com` only. A relay keeps its credentials for its life (RFC
+  8656) and refreshes its allocation and its channel bindings itself (`port/render/net/src/turn.rs`);
+  between races, once its credentials are 35 minutes old, the client offers a new session, which
+  gets new credentials.
+- A racer whose own connection isn't up 10 s after the race's `start` (no `sfu_connected`; the
+  room's `SFU_CONNECT_MS`) leaves the race alone, as below: the others stop expecting its channels
+  and are released. Its session is kept for the next race. Measured setups (finding 175): from the
+  answer to connected, UDP 0.7-1.5 s and TURN over TLS 2.9-3.2 s. A game says `sfu_ready` once it
+  has every racer's channels, or 8 s after the start with its own channels open (a racer that never
+  connects publishes none); the room still releases only when every connected racer is subscribed
+  both ways.
 - Setup has a deadline: 25 s after the race's `start` (the room's `SFU_SETUP_MS` sets another),
-  every racer must have acknowledged `sfu_ready`. Measured setups take 0.2-0.5 s over UDP and
-  2.4-3.1 s through TURN; the margin covers ten racers' 90 subscription calls and one API call
-  that runs into its timeout, and ends before the game's 30 s wait for the others' rides.
+  every racer must have acknowledged `sfu_ready`. It covers a newcomer's whole setup and one API
+  call that runs into its timeout, and ends before the game's 30 s wait for the others' rides.
 - A racer whose setup fails (an API error on its session, an invalid signaling step) or isn't
   done by the deadline is out of the race, as a racer who leaves it (release review round 2,
   finding 158). It gets `{"type":"error","code":"bad_value","message":"Realtime connection
@@ -289,21 +411,35 @@ so the game sees start before buffered events. Channels close at race end.
   the rider), the subscriptions to it close with `sfu_closed`, and the release is checked again
   without it, so the others go on. It stays in the room: in a race room its member shows
   `inRace` false and `raceState` `dnf` (`dnfReason` `left`), which takes its game back to the
-  room (port/net/client.c). No automatic API mutation retries and no second setup in that race:
-  a partially successful operation must not allocate duplicate channels.
+  room (port/net/client.c). No API mutation is retried: a partially successful operation must not
+  allocate duplicate channels; its game offers a new session (`sfu_reset`).
 
 The Worker reads `REALTIME_APP_ID`, `REALTIME_APP_TOKEN`, `TURN_KEY_ID` and `TURN_KEY_API_TOKEN`
 from env/secrets. For local tests they live only in gitignored `.dev.vars`. None is sent to
 clients. Client SDP is never broadcast or stored in room messages; SFU answers and TURN
 credentials are sent only to their owner. No message carries another player's SDP, candidates,
-TURN credentials or address. The native client has no peer signaling or TURN mesh path: a TURN
-relay only ever carries that player's own traffic to the SFU.
+TURN credentials, session id or address. The native client has no peer signaling or TURN mesh
+path: a TURN relay only ever carries that player's own traffic to the SFU.
 
-The API limit is 50 requests/session/second; mutations are serialized, and channels use one
-publication batch and one subscription batch per publisher. API operations have a 15 s timeout.
-A lost WebRTC connection has a 30 s session reuse window; the game reports failure and rejoins
-with a fresh session rather than retaining a broken connection. See finding 158 for live checks.
-
+The API limit is 50 requests/session/second. A member's own session work (`sessions/new`, its
+publication, its TURN credentials, its acknowledgement) runs at once; a replacing offer and the
+closes run one after another in the room's queue; subscriptions run in the coalesced pass above.
+The room runs at most 5 API calls at once, its subscription work (subscriptions, closes,
+inspections) at most 4, so a member's own session work always finds a slot; a call's timeout (15 s,
+10 s in the subscription pass) starts when the call does (finding 182: a Durable Object has 6
+outgoing connections waiting for headers, a 7th waited in the runtime's queue with its timeout
+running). A subscription call with no answer (a timeout, a network error, a 5xx, 409 or 429) fails
+nobody: after 2 s (doubling, at most 16 s) the subscriber's session is listed (`GET
+sessions/{id}`), what the call made is adopted and sent in `sfu_channels`, the rest made again, and
+10 s later the session is listed once more to close a second subscription an aborted call made
+late (never announced: its endpoint never heard of it, so the session is then replaced, finding
+187). An item error or another 4xx fails the
+session as before. A lost WebRTC connection has a 30 s session reuse window; the
+game drops a failed association and offers a new session rather than retaining a broken
+connection. A lost room WebSocket leaves the SFU session up: the race goes on over it while the
+game rejoins. An idle session costs about nothing: Realtime bills only what Cloudflare sends to
+clients (pricing: egress, publishing is free), and between races nothing flows but the transport's
+keepalives. See findings 158 and 177 for live checks.
 ### PING, type 3 — client → server; PONG, type 4 — server → client
 
 | Offset | Size | Field |
@@ -312,8 +448,12 @@ with a fresh session rather than retaining a broken connection. See finding 158 
 | 1 | u8 | `slot` |
 | 2 | n | any payload, at most 32 bytes (e.g. a u32 sequence and an f64 send time) |
 
-The server answers the sender only, with the same bytes and the type changed to 4. Use it to
-watch the round-trip during a race; it is never forwarded.
+The server answers any member's PING, to the sender only, with the same bytes and the type changed
+to 4, followed by its clock (f64 ms since the Unix epoch, little-endian; protocol 4). Use it to watch the round-trip
+during a race and to keep the server clock offset (`offset ≈ serverTime - (tSend + rtt/2)`): the
+race's STATE bundles are stamped on that clock. The game takes a PONG only when its round trip is
+no slower than its usual one, and during a race moves its offset by at most 2 ms a PONG. It is
+never forwarded.
 
 ### STATE, type 5, and EVENT, type 6 — client ↔ SFU ↔ clients
 
@@ -323,18 +463,39 @@ watch the round-trip during a race; it is never forwarded.
 | 1 | u8 | `slot` of the sender |
 | 2 | n | payload, the client's format (finding 044) |
 
-State sync: a STATE frame is one rider snapshot (payload version 5, 104-834
-bytes). Its timestamp is sender race time in ms since GO. Version 5 repeats each changed pad word in six consecutive snapshots,
-and refreshes all 146 words every 30 snapshots, as index/u32 pairs; previous-action words 25-49 are reconstructed locally. Receivers reject older
-timestamps before changing the pad mirror. Every owned rider is sent about 30 times/second.
-EVENT remains payload version 2. The SFU reads none of the gameplay payload.
+State sync: a STATE frame is one bundle of the sender's rider snapshots (payload version 6, protocol
+4, finding 169; `port/hle/state_bundle.h`), at most 990 bytes so that the frame with its 8-byte race
+marker stays at or under 1,000 bytes: one SCTP chunk (str0m's is 1,062 bytes), since a STATE
+message split over several datagrams is lost whole when any of them is. A PC with more riders
+than fit (a host with its AI riders) sends several bundles for one tick. A player's own rider is
+sent every race tick (60 a second), AI riders every second tick (30 a second).
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | u8 | version = 6 |
+| 1 | u8 | bundle index in this tick (0, 1, ...); a congested sender keeps only the newest per index |
+| 2 | u8 | riders in the bundle, 1-10 |
+| 3 | f64 | the moment the snapshots show on the server clock (ms since the Unix epoch): the sender's GO there plus its race time |
+| 11 | n | the riders' records, back to back |
+
+A record: the rider's global id (u8: a human's lobby slot, an AI rider's slot), the sender's race
+time (i32 ms since its GO), position, orientation (3 rows), velocity and angular velocity (f32 x 3
+each), the wheels (4 f32), the wheel contacts (2 u8), the State (u16), crash flags and kind,
+checkpoints passed, attack kind and bottles (u8 each), then k (u8) and k pad words as index (u8)
+and value (u32): 103 + 5k bytes. Each changed pad word is repeated in six consecutive records and
+all 146 words are sent every 30 records (60 for a player's own rider; each rider at another phase, so two full records seldom
+share a tick); previous-action words 25-49 are rebuilt locally. Receivers check the whole bundle
+first, then reject each record older than the newest they hold for that rider before changing its
+pad mirror. EVENT remains payload version 2. The SFU reads none of the gameplay payload.
 
 `DHD_NET_DROP_STATE=N` deterministically drops N percent of outgoing STATE messages for testing;
-EVENT is unaffected. `DHD_NET_SFU_UDP=0` drops every UDP datagram to and from the SFU (a network that
-blocks UDP), so the TURN-over-TLS fallback must carry the race. `net:` reports per-sender p50/p95/p99 estimated snapshot age and
-gaps longer than 100 ms. Age uses the existing per-sender EVENT_GO server-clock stamp plus the
-snapshot race timestamp, so it includes transit and time awaiting the next snapshot. Peer clock
-offset error and simulation drift affect the estimate; this is not a precise one-way latency probe.
+EVENT is unaffected. `DHD_NET_SFU_DROP_IN=N` drops N percent of the DTLS records arriving from the
+SFU over UDP before the client's WebRTC stack, as a lossy link would (Cloudflare then retransmits).
+`DHD_NET_SFU_UDP=0` drops every UDP datagram to and from the SFU (a network that
+blocks UDP), so the TURN-over-TLS fallback must carry the race. `net:` reports per-sender p50/p95/p99 snapshot age and
+gaps longer than 100 ms, and STATE messages a second each way. Age is this PC's server clock minus
+the newest bundle's stamp, sampled every network tick, so it includes transit and time awaiting
+the next bundle; the two PCs' clock offset errors add to it.
 
 ### Leaving
 
@@ -354,20 +515,19 @@ The server keeps what everyone has to agree on:
   (issue #17).
 - **Choosing** (`pick` with `"choosing":true`): the member is on the rider screen; it is
   unreadied and `ready` answers `not_ready` until a pick with `"choosing":false`.
-- **Countdown.** When at least two members are in the room, all ready, none choosing,
-  and every one said `"countdown"` in `hello`, the server sets `countdownEndsAt` (server ms,
-  `COUNTDOWN_MS` = 5 s on) and starts the race itself then, as `start` would. Any change that
-  breaks the rule clears it. `start` still starts at once. Clients show the time left with
-  `serverTime` as the clock offset. Older clients never get a countdown: the host starts.
+- **Countdown.** When the grid locks (at least two members, all ready and none choosing; the
+  host's `start`; an intermission's end: Race rooms, below), the server sets `countdownEndsAt`
+  (server ms, `COUNTDOWN_MS` = 5 s on) and starts the race itself then. Clients show the time left
+  with `serverTime` as the clock offset.
 
 ## Lobby list
 
 `GET /v1/lobbies` → `200 application/json`:
 
 ```json
-{"protocol":3,"minVersion":"0.1.0","region":"EU","now":1734000000000,"lobbies":[
+{"protocol":4,"minVersion":"0.7.13","region":"EU","now":1734000000000,"lobbies":[
   {"code":"K7QX2M","roomName":"Friday race","version":"dhd-port 0.2.0 1a2b3c4d5e6f7a8b","track":3,
-   "players":2,"maxPlayers":10,"hostName":"Ann","region":"EU","colo":"FRA","createdIn":"EU"}]}
+   "players":2,"maxPlayers":10,"hostName":"Ann","region":"EU","colo":"FRA","createdIn":"EU","area":"EU EAST"}]}
 ```
 
 `region` at the top is the asker's own; the list comes in their region's order (Region, below).
@@ -376,8 +536,8 @@ The server keeps what everyone has to agree on:
 from a room's pings. It sets its offset from `now` (half the request's round-trip late at most) and
 shows no count without one (finding 135).
 
-Only public rooms that have not started and have a free slot are listed. Clients should
-show only rooms whose `version` matches their own.
+Public rooms are listed, racing and full ones too (Race rooms, below). Clients should show only
+rooms whose `version` matches their own.
 
 ## Latest release (launcher backup)
 
@@ -406,29 +566,36 @@ unreachable or HTTP error) or `502` (its `latest.json` refused),
 ## Limits
 
 - One room holds at most 10 members.
-- Text frames: at most 4 KB. Binary frames on the WebSocket: at most 3072 bytes (only PING
-  carries a payload, at most 32 bytes).
+- Text frames: at most 4 KB. The only binary frame on the WebSocket is PING (at most 32 bytes of
+  payload); the server drops any other.
 - A room with no members is deleted.
 - Caps per connection (finding 161, `online/server/src/guard.ts`): at most 100 text frames and
   100 binary frames in each 5 s window (20 a second each; the game sends about 1.5 text and, in
-  a race, 2 binary PINGs a second: protocol 3 race frames travel over the SFU, finding 158, and a
+  a race, 2 binary PINGs a second: race frames travel over the SFU, finding 158, and a
   race's Realtime setup is a few text messages). Over a cap the rest of that window's frames of
   that kind are dropped (binary ones not answered);
   the first time the sender also gets the non-fatal
   `{"type":"error","code":"too_fast","message":"Slow down: too many messages."}`, and the next
   window over a cap closes it: `too_fast` "Disconnected: too many messages.", close 4012, and the
   member leaves as a disconnect.
-- No reconnect in version 1: a dropped racer is handed to AI for the rest of the race.
 - Rejoin (finding 137). Each member has a random rejoin token, sent only in its own `welcome`
   (never in `room` or anywhere else). A client keeps it for that room, and when its connection
   drops it says hello again with `"rejoinToken"`: the member with that token is taken back at
   once (id, host, rider, Ready), whether its old socket has closed yet or not; the old socket is
   closed (1000, `replaced`). A name alone takes no member back: a hello without a token, or with
   one no member has, joins as a new member, as any player whose name is already in the room does
-  (names are not unique). A socket that ends without a close frame (1006) outside its race keeps
-  its member 20 s for the rejoin (it doesn't race meanwhile); a member whose socket sends nothing
-  for 20 s leaves as a disconnect and the socket is closed (1001, `silent`). A clean close (1000)
-  or a drop during the member's race leaves at once.
+  (names are not unique). A socket that ends without a close frame (1006) keeps its member 20 s
+  for the rejoin; a member whose socket sends nothing for 20 s leaves as a disconnect and the
+  socket is closed (1001, `silent`). A clean close (1000) leaves at once.
+- In a race (finding 175): a racer whose hello listed `"race_rejoin"` and whose socket drops
+  (1006) stays in its race through those 20 s; the game races on over the SFU meanwhile (STATE
+  and EVENT never use the room socket), so the others see its rider move. Its rejoin hello sends
+  `raceStartAt`; the welcome says `race` (above) and is followed by what it missed: `left` for
+  each racer gone since, its channels (`sfu_channels` with `full`) and `sfu_ready`, or, when the
+  hello names another race or none (it missed the `start`), the `start` again for its slot. Its
+  game then sends its `finish` or `back` again if it had sent one while the socket was down. Not
+  back in 20 s: out of the race as a racer who leaves (`left`, the host's AI takes the rider). A
+  racer without `race_rejoin` (its SFU ends with the socket) leaves its race at the drop. A rejoin refused with `rate_limited` is tried again by the game.
 - A server restart (a deploy) drops every socket with no close event. A lobby client says hello
   again with its token and gets its member back; members not back within the hello timeout leave
   as disconnects.
@@ -443,14 +610,11 @@ clears readiness; a changed track requires guests to ready again. Exact executab
 identity in `hello.version` refuses mixed builds. Raise MIN_VERSION to the release
 that includes this UI at release time; no deployment is part of this change.
 
-## Session rooms (0.7.4)
+## Race rooms: phases, grid and results (0.7.4)
 
-A creator opts in with `"features":["countdown","session"]` in hello.
-The creator's feature selects the rules for the room's whole lifetime.
-Version and ISO matching still apply. Protocol remains 1.
-A creator without session keeps all the old rules, including immediate host Start,
-no racing joins, and hiding racing or full rooms from the public list.
-Binary STATE and EVENT formats do not change. The server runs no game logic.
+Every room has these rules (since finding 185; before it a creator asked for them with the
+`"session"` feature, and rooms without it kept older rules for releases before 0.7.4).
+Version and ISO matching still apply. The server runs no game logic.
 
 ### Settings and phases
 
@@ -550,7 +714,7 @@ after host migration. Only an empty room is destroyed.
 
 ### Room snapshot and public list
 
-Session room snapshots keep all old fields and add:
+Room snapshots carry, beside the fields above:
 
 | Field | Meaning |
 | --- | --- |
@@ -567,7 +731,7 @@ Session room snapshots keep all old fields and add:
 | rulesPending | current rules differ from the locked copy |
 | lastRace | null, or {id, track, entrants} |
 
-Each member adds inRace (still attached to this race scene/relay).
+Each member adds inRace (still in this race's scene).
 Members with a current race entry add raceState: racing, finished, or dnf;
 place; finishTicks for finishers; dnfReason for DNFs.
 Members waiting outside the race omit raceState and result fields.
@@ -576,13 +740,13 @@ LastRace entrants carry id (member id), name, rider, place and either ticks or
 dnfReason. Disconnected entrants remain in lastRace.
 All deadlines are server epoch milliseconds; absent deadlines are null.
 Text frames fit 4096 UTF-8 bytes for ten members, including prior results.
-Session member and room names replace C0 controls and unpaired UTF-16 surrogates with U+FFFD to
-bound JSON escaping. Old rooms retain their existing name handling.
+Member and room names replace C0 controls and unpaired UTF-16 surrogates with U+FFFD to bound
+JSON escaping.
 
-GET /v1/lobbies includes public session rooms while racing and when full.
+GET /v1/lobbies includes public rooms while racing and when full.
 Their entries add phase, raceStartedAt, finishEndsAt, nextRaceAt and full.
 Players counts all members. MaxPlayers is the membership limit.
-Entries sort by players descending. Old rooms retain their visibility rules.
+Entries sort by players descending.
 Screens filter by their own version before showing entries.
 
 ### Game-facing C API
@@ -629,13 +793,13 @@ It logs each phase transition as PHASE followed by the phase and local race coun
 A late join waits for its first grid. Existing recording replay mode remains.
 
 
-## Ten racers (protocol 2)
+## Ten racers
 
 New public and private rooms default to ten members. The host can choose 2–10,
 but cannot shrink below current membership. A race still uses one local human.
 NetLobby member, racer and result arrays each have ten entries. Native and browser
-hosts use the regenerated shared ABI. Rider STATE format remains version 3;
-EVENT format remains version 3. The binary relay path is unchanged.
+hosts use the regenerated shared ABI. It changed no binary format (today's formats and their
+SFU path: Race, above).
 
 Rotation settings carry `rotation` and parallel `trackLimits` arrays in the same
 message. Limits are 6, 8 or 10. At least one entry must take ten riders. Clients
@@ -662,7 +826,8 @@ including ping, readiness, race state and results. The fourth room rule sets cap
 
 ## Region (finding 135)
 
-A room is a Durable Object, and it runs where it was created. `/v1/rooms/new` creates it with a
+A room is a Durable Object, and it runs where it was created. `/v1/rooms/new` creates it with the
+hint its creator picked or Auto's (below, since finding 181); before that, a
 location hint from the creator's continent and country as Cloudflare's geolocation places them
 (`request.cf`; never the IP), not from the Cloudflare location their ISP happens to reach:
 Europe `weur` (the Atlantic side: GB, IE, FR, ES, PT, the Benelux...) or `eeur` (the rest),
@@ -693,6 +858,137 @@ server's table of Durable Object locations, else the hint's (`EU`, `NA`, `SA`, `
 Every field and the message type are additions: clients that don't know them ignore them (the
 native client reads by key, the browser copies known keys), so `MIN_VERSION` stays as it is.
 
-SFU allocations are restricted to running race members, one setup attempt per member per race.
-Allocations close at race end or departure. Receiver rate protection silences a member for the
-remaining race if any rider exceeds 120 snapshots in a one-second window (normal: 30/s).
+### The creator's pick and Auto (finding 181)
+
+`/v1/rooms/new?region=<hint>` makes the room with that hint. The hints offered are the ones that
+run Durable Objects of their own:
+
+| `region` | Area players see | Colos it ran in (2026-11-08) |
+|---|---|---|
+| `weur` | `EU WEST` | AMS LHR CDG MAD MRS LIS |
+| `eeur` | `EU EAST` | FRA MXP WAW VIE OTP ARN PRG |
+| `enam` | `NA EAST` | ATL EWR MIA ORD IAD |
+| `wnam` | `NA WEST` | DFW SJC LAX DEN SEA |
+| `apac-ne` | `ASIA NE` | NRT KIX ICN |
+| `apac-se` | `ASIA SE` | SIN HKG |
+| `oc` | `OCEANIA` | SYD MEL BNE |
+
+No `region`, `auto`, or any other value (`sam`, `afr`, `me`, `apac`, unknown names) is Auto, so a
+game never fails to make a room over its pick. Auto takes the hint of the Cloudflare location the
+creator reached (`online/server/src/colo-hints.ts`, made by `online/server/tools/do_locations.mjs`
+from Cloudflare's published Durable Object locations and measured round trips) when that colo is on
+the creator's own continent (Asia split as below: northeast, southeast, the Middle East, the rest),
+and the country and continent above otherwise: when the colo is not in the table, or when the
+creator's ISP took them to another continent (an Indonesian reaching Tokyo or Paris keeps the
+Southeast Asian room). The server logs, once per room, `room CODE: runs in COLO, made with HINT
+(chosen | colo | country | colo-other-continent | none) from EDGE`.
+
+- `welcome` adds `roomArea` (the finer name of where the room runs: its colo's area, else its
+  hint's; `""` unknown) and `roomChosen` (`true`: the creator picked the region).
+- `where` and each `/v1/lobbies` row add `area`, the same name.
+
+All additions: games up to 0.7.13 send no `region` (Auto) and ignore the new keys.
+
+SFU sessions belong to room members, one at a time per member (finding 177); subscriptions are
+made for each race's racers and close on departure, on a session's replacement, or for a member
+sitting a race out. Receiver rate protection drops a member's STATE
+messages beyond 240 in a one-second window per bundle index (normal: 60/s for index 0); it never
+silences a member for the rest of the race (protocol 3 did, and a backlog after a network stall
+froze an honest rider; finding 169).
+
+
+## P2P rooms (finding 186, test builds)
+
+A P2P room is a room as above, with every rule, rejoin and restart, whose race frames travel
+between the games instead of through the SFU: in a **star** of WebRTC peer connections around one
+member, the **hub**, which forwards the others' frames. A member who can't reach the hub races over
+the room's SFU instead (the **fallback**), bridged by the hub. Its code has 7 characters (an SFU
+room's 6, the same alphabet), so a game knows the kind of room from the code alone.
+
+**Private.** The hub's game learns each member's network address from their signaling and each
+member the hub's, so a P2P room is never listed: `public` is ignored and the room is never in
+`/v1/lobbies`. The game says "Players in this room can see your network address." on its CREATE A
+P2P RACE row and when a P2P room opens. Members never signal each other; a fallback member's own
+SFU session tells nobody anything (as in an SFU room).
+
+**Joining.** `/v1/rooms/new?transport=p2p` makes one (with `region` as any room: its rules and its
+fallback run there); a join goes to `/v1/rooms/CODE` like any other. The hello must list the
+`p2p` feature (a game that doesn't is refused with `bad_message`). The welcome adds
+`"transport":"p2p"`; games take the kind of room from it.
+
+**Routes** (server → every member, after every change: a join or leave, a link, a new hub, a
+race's start, a racer leaving it, its end; the start's routes come before the start message):
+
+```json
+{"type":"p2p","hub":2,"epoch":1,"members":[{"id":2},{"id":5,"link":"star"},{"id":7,"link":"sfu"},{"id":8}],
+ "race":{"startAt":1734000003000,"slots":[2,5,7],"left":[]}}
+```
+
+`hub`: the member whose game the others connect to (at first the room's creator); `epoch` counts
+the hubs (1 for the first, one more for each new one). A member's
+`link`: `star` once its link to the hub is up, `sfu` when it races over the SFU, absent while it is
+being made (the hub has none). `race`: the running race's marker and its slots (member ids by
+slot) and the slots that left, or null: the hub forwards a race's frames whether it races or not.
+
+**Signaling.** `{"type":"p2p_signal","to":5,"epoch":1,"signal":{...}}` from the game, passed on as
+`{"type":"p2p_signal","from":2,"epoch":1,"signal":{...}}`, only between the hub and a member and
+only with the current `epoch` (a late signal for an earlier hub's peers is dropped by the room, and
+by a game whose routes name another epoch); `signal` is an `offer`, `answer` (`sdp`) or `candidate`
+(`candidate`). The hub offers. Text frames in a P2P room may
+be up to 16 KB for this message (4 KB for any other), a member may send 400 text frames per window
+(finding 161's caps: 100 elsewhere) and 64 KB of signaling per window; signals beyond that are
+dropped, the first answered with the non-fatal `too_fast` warning.
+
+**Links.** `{"type":"p2p_link","hub":2,"member":5,"up":true}` from either end of the link between
+the hub 2 and member 5; one naming another hub is ignored. Up: `star`. Down, or not up within
+`P2P_LINK_MS` (10 s) of being asked for (the member's join, a new hub): `sfu`, until the race ends
+or the hub changes, when it tries again. A link is decided once per try (a late up after the
+fallback waits for the next).
+
+**The SFU's part.** Every member makes its SFU session on joining, as in any room. Only the
+fallback racers and the hub (when there are any) take part in a race's SFU side: each fallback racer
+is subscribed to the hub's publication and to the other fallback racers', the hub to theirs; star
+racers are never subscribed. The release (`sfu_ready`) waits for those members alone and comes again
+for racers that fall back during the race; the hub's acknowledgement counts whether it races or not.
+A fallback racer has an SFU room's setup deadlines (`SFU_CONNECT_MS`, `SFU_SETUP_MS`) from the
+moment it fell back, at the earliest the start; a star racer's session failing takes it out of
+nothing. On a P2P room's SFU a frame carries its sender's slot: a receiver keeps the slot of the hub's
+frames (it publishes every star racer's) and drops another publisher's frame whose slot isn't its
+own.
+
+**A silent link (finding 187) in a P2P room.** The SFU side's rules hold for the members on it: a
+fallback racer's or the hub's session with dead stream ids is replaced (the hub's too when it
+doesn't race; a star racer's at once, its race runs on the star), and `sfu_silent` comes from a
+fallback racer (nothing from the hub's publication and the other fallback racers) or from a racing
+hub (nothing from its fallback racers; a hub that sits the race out gets no `race_go`, so it has no
+moment and reports nothing): a new session; silent again, a fallback racer is out of the race
+and the hub gets nothing more (its single fallback racer's upload may be the cause; it stays the hub
+and in its race). A star racer's game reports no silence over the SFU, and none on its star link:
+its keepalives travel on the race events' own channel (a link whose keepalives stop for 5 s is
+down: `p2p_link`, the SFU), and the star's channels are never closed or reused, so the dead stream
+ids of finding 187 can't happen there. `race_go` works as in any room: the lowest slot still racing
+names the moment, whoever the hub is.
+
+**The hub.** Picked by the room: at first the creator; at once when the hub leaves the room or its
+room connection drops; after 12 s with fallback racers waiting and no working SFU session (a
+browser's game; a session being renewed is back sooner), by a member whose session can bridge; and,
+never within a minute of the last change, when no member links to it although direct links work
+for some (two or more members, all on the SFU, their lost links 5 s old). The next is the present
+member that has been on a star, then one with a working SFU session, then the lowest room ping,
+then the one here longest; a member whose own link to the hub died in the last minute comes last,
+and isn't picked while the hub is still there. One member's link going down never moves the hub.
+Every member then connects anew; a running race goes on (riders resume when the links are up; a member that
+can't reach the new hub falls back).
+
+**Peer connections.** WebRTC data channels negotiated with fixed ids: 0 race snapshots (unordered, no
+retransmission), 1 reliable. A message is `1`, the race's `startAt` (u64, little-endian; another
+race's frames are dropped), then the game's STATE or EVENT frame; or `2` alone, a keepalive (each
+second; a link silent for 5 s is down). The hub stamps a member's frame with that member's slot.
+Direct paths only (host and server-reflexive candidates from `stun.cloudflare.com`; no relay between
+games): each game offers two host candidates on one address, the second answering only (some
+computers refuse UDP flows the game opens itself, finding 180).
+
+The browser runs P2P rooms only: the page owns the room connection and WebRTC (RTCPeerConnection
+belongs to Window) and runs the same star as wasm (`port/render/star`, `port/web/www/p2p.js`); it has
+no SFU client yet. A page that hosts it must allow HTTPS and WSS connections to the official server
+in its CSP.

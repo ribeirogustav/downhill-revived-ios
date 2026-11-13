@@ -9,8 +9,9 @@
   An independent native iOS fork of <a href="https://github.com/skuza-oss/downhill-revived">Downhill Revived</a>.
 </p>
 
+
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/BASE-0.7.12-FF961F?style=for-the-badge&labelColor=141824" />
+  <img alt="Version" src="https://img.shields.io/badge/BASE-0.7.16-FF961F?style=for-the-badge&labelColor=141824" />
   <img alt="iOS" src="https://img.shields.io/badge/iOS-17.0%2B-1675E0?style=for-the-badge&labelColor=141824" />
   <img alt="Platform" src="https://img.shields.io/badge/ARM64-METAL-3EAFCE?style=for-the-badge&labelColor=141824" />
   <img alt="License" src="https://img.shields.io/badge/GPL-3.0%2B-78B45A?style=for-the-badge&labelColor=141824" />
@@ -29,6 +30,9 @@
 </p>
 
 ---
+
+The source uses upstream tag **0.7.16**. Each touch control scales from **25% to 600%**, with portrait and landscape layouts for iPhone and iPad. See the [touch controls](ATUALIZACOES_TOUCH_600_IPAD.md) and [iOS integration notes](docs/IOS_UPSTREAM_0.7.16.md).
+
 
 Downhill Revived for iOS brings the open-source **Downhill Revived** project to Apple's mobile devices with a SwiftUI launcher, native Metal rendering, touch controls and external-display support. It is **not an emulator front-end** and is **not affiliated with the original game's rights holders**.
 
@@ -53,8 +57,8 @@ The codebase is based on the work of **[skuza-oss](https://github.com/skuza-oss/
 ## Download
 
 - [Download the latest release](https://github.com/ribeirogustav/downhill-revived-ios/releases)
-- Current version: `0.7.12`
-- Asset: `DownhillRevived-0.7.12-unsigned.ipa`
+- Current version: `0.7.9 (Beta)`
+- Asset: `DownhillRevived-iOS-0.7.9-build-70902-unsigned.ipa`
 - Target: iOS 17.0+ (ARM64 / Metal)
 
 This IPA is unsigned. It cannot be installed directly on an ordinary iPhone/iPad as-is. Developers may sign a build with an appropriate Apple team and provisioning profile. Instructions: [Installation and signing](docs/INSTALLATION.md).
@@ -62,10 +66,10 @@ This IPA is unsigned. It cannot be installed directly on an ordinary iPhone/iPad
 **SHA-256 of the unsigned IPA:**
 
 ```text
-936bceb240e41256893be9a5fab07e398bcd4a25284dabefbec764fc7c61ccc0
+4181572bd7b78ce87e956d52309e0879b3230f82a7511d325a6abd2b50adcc4c
 ```
 
-The hash above verifies the **exact unsigned 71206 IPA**. Signing, re-packaging or rebuilding changes its checksum. Compare only the matching release filename and see [`SHA256SUMS`](SHA256SUMS).
+The hash above verifies the **exact unsigned 70902 IPA**. Signing, re-packaging or rebuilding changes its checksum. Compare only the matching release filename and see [`SHA256SUMS`](releases/ios-v0.7.9/SHA256SUMS).
 
 ## Requirements
 

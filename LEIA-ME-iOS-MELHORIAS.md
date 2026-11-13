@@ -129,7 +129,7 @@ antes de editar, pois abrir o editor mantém o estado de pausa atual do jogo.
 
 Passaram 25 testes portáteis. A compilação no Xcode, os gestos e a gravação dos
 layouts ainda precisam ser testados no iPhone. Os detalhes estão em
-`docs/findings/177-ios-control-editor.md`. O histórico das revisões está abaixo.
+`docs/findings/217-ios-control-editor.md`. O histórico das revisões está abaixo.
 
 # Atualização iOS 0.7.12
 
@@ -289,7 +289,7 @@ Para jogar online, use a versão 0.7.9 em todos os participantes.
 - Upstream: https://github.com/skuza-oss/downhill-revived/releases/tag/v0.7.9
 - Relógio e buffers: `docs/findings/139-delta-time-clock.md`
 - ProMotion: https://developer.apple.com/documentation/quartzcore/optimizing-iphone-and-ipad-apps-to-support-promotion-displays
-- Detalhes desta revisão: `docs/findings/168-ios-performance-review.md`
-- Correções da revisão 2: `docs/findings/169-ios-stability-review.md`
+- Detalhes desta revisão: `docs/findings/208-ios-performance-review.md`
+- Correções da revisão 2: `docs/findings/209-ios-stability-review.md`
 
-- Refinamentos da revisão 3: `docs/findings/170-ios-tv-touch-refinements.md`
+- Refinamentos da revisão 3: `docs/findings/210-ios-tv-touch-refinements.md`

@@ -172,6 +172,44 @@ static void sample_alpha(unsigned x, unsigned y, unsigned alpha, const char *nam
     show(256, alpha, name);
 }
 
+/* Finding 196: an upscaled sprite interpolates its UVs smoothly across the whole sprite, not
+   once per GS pixel: a 2-GS-pixel-wide sprite over a black-to-white 2-texel texture shows a
+   four-step gradient at 2x, where GS-pixel sampling showed two flat pairs. */
+static void sprite_gradient(void)
+{
+    clear(256, 0xFF000000);
+    gs_write_pixel(&gs, GS_PSMCT32, 4096, 1, 0, 0, 0xFF000000);
+    gs_write_pixel(&gs, GS_PSMCT32, 4096, 1, 1, 0, 0xFFFFFFFF);
+    gs_write_pixel(&gs, GS_PSMCT32, 4096, 1, 0, 1, 0xFF000000);
+    gs_write_pixel(&gs, GS_PSMCT32, 4096, 1, 1, 1, 0xFFFFFFFF);
+    gs_write(&gs, GS_TEX0_1, 4096ULL | 1ULL << 14 | 1ULL << 26 | 1ULL << 30 | 1ULL << 34);
+    gs_write(&gs, GS_TEX1_1, 1ULL << 5 | 1ULL << 6);
+    gs_write(&gs, GS_PRIM, 6 | 16 | 256);
+    gs_write(&gs, GS_RGBAQ, 0x3F80000080808080ULL);
+    gs_write(&gs, GS_UV, 8 | 8ULL << 16);
+    gs_write(&gs, GS_XYZ2, 16 * 16ULL | (16 * 16ULL) << 16);
+    gs_write(&gs, GS_UV, 24 | 24ULL << 16);
+    gs_write(&gs, GS_XYZ2, 18 * 16ULL | (18 * 16ULL) << 16);
+    gs_priv_write(&gs, GS_PMODE, 2);
+    gs_priv_write(&gs, GS_SMODE2, 0);
+    gs_priv_write(&gs, GS_DISPFB2, 256 | 8ULL << 9);
+    gs_priv_write(&gs, GS_DISPLAY2, (WIDTH - 1ULL) << 32 | (HEIGHT - 1ULL) << 44);
+    unsigned w = 0, h = 0;
+    ++kernel_vsync_count;
+    gs_native_vsync(&gs, &w, &h, 0);
+    uint32_t *pixels = gs_native_picture(&gs, &w, &h);
+    dump("upscaled sprite interpolates smoothly", pixels, w, h);
+    check_presented("upscaled sprite interpolates smoothly", pixels, w, h);
+    unsigned r[4] = {0, 0, 0, 0};
+    int ok = pixels && w == WIDTH * 2 && h == HEIGHT * 2;
+    if (ok)
+        for (unsigned i = 0; i < 4; i++) r[i] = pixels[34 * w + 32 + i] & 255;
+    ok = ok && r[0] < r[1] && r[1] < r[2] && r[2] < r[3] && r[3] - r[0] > 100;
+    if (!ok) failures++;
+    printf("upscaled sprite interpolates smoothly: %s (%u %u %u %u)\n", ok ? "PASS" : "FAIL",
+           r[0], r[1], r[2], r[3]);
+}
+
 /* A blend scene's picture: no expected colour, compared across backends (dump). */
 static void picture(unsigned page, const char *name)
 {
@@ -245,6 +283,7 @@ static void blend_scenes(void)
     const uint64_t fix = 0 | 1 << 2 | 2 << 4 | 1 << 6 | 0x50ULL << 32;   /* (Cs - Cd) * 0x50 + Cd */
     const uint64_t sub = 1 | 0 << 2 | 0 << 4 | 1 << 6;            /* (Cd - Cs) * As + Cd */
     const uint64_t inverse = 0 | 1 << 2 | 0 << 4 | 2 << 6;        /* (Cs - Cd) * As + 0 */
+    const uint64_t keep = 0 | 0 << 2 | 0 << 4 | 1 << 6;           /* (Cs - Cs) * As + Cd: the colour kept */
     const uint64_t always = 1ULL << 16 | 1ULL << 17, gequal = 1ULL << 16 | 2ULL << 17, greater = 1ULL << 16 | 3ULL << 17;
     const unsigned tri = 3 | 8 | 64;
     blend_scene("blend As, alpha written, no Z", blend, 0, 0, 0, tri);
@@ -263,6 +302,11 @@ static void blend_scenes(void)
     blend_scene("blend As, alpha test AFAIL FB_ONLY", blend, 0, greater | 1 | 5 << 1 | 0x60 << 4 | 1 << 12, 1, tri);
     blend_scene("blend As, alpha test AFAIL RGB_ONLY", blend, 0, gequal | 1 | 5 << 1 | 0x60 << 4 | 3 << 12, 1, tri);
     blend_scene("no blending, Z GREATER with writes", blend, 0, greater, 1, 3 | 8);
+    /* The colour kept (blend Zero / One; finding 176): drawn without blending, colour masked. */
+    blend_scene("Cd kept, alpha written, Z GEQUAL with writes", keep, 0, gequal, 1, tri);
+    blend_scene("Cd kept, alpha masked, Z GREATER with writes", keep, 0xFF000000u, greater, 1, tri);
+    blend_scene("Cd kept, alpha masked, Z GEQUAL read only", keep, 0xFF000000u, gequal, 0, tri);
+    blend_scene("Cd kept, alpha test AFAIL FB_ONLY", keep, 0, greater | 1 | 5 << 1 | 0x60 << 4 | 1 << 12, 1, tri);
 }
 
 /* A full picture from CPU memory alone (an upload: no draw). */
@@ -331,6 +375,7 @@ int main(void)
     sample_alpha(9, 9, 0x7E, "8H replaces the byte");
     sample_alpha(10, 9, 0xA0, "zero nibble is still written");
     sample_alpha(0, 0, 0xA5, "partial uploads preserve other pixels");
+    sprite_gradient();
 
     clear(56, 0x8000FF00);
     show(56, 0x8000FF00, "first loading buffer before font upload");

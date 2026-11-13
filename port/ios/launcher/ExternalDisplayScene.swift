@@ -66,11 +66,33 @@ private struct TVLauncherView: View {
     var body: some View {
         if !model.isGameRunning {
             GeometryReader { geo in
-                LauncherNavigationView(path: .constant(model.navigationPath), size: geo.size,
-                                       safe: geo.safeAreaInsets, isTVPreview: true)
+                if geo.size.width > 0, geo.size.height > 0 {
+                    let viewport = TVLauncherViewport(size: geo.size)
+                    LauncherNavigationView(path: .constant(model.navigationPath),
+                                           size: viewport.layoutSize, safe: EdgeInsets(), isTVPreview: true)
+                        .frame(width: viewport.layoutSize.width, height: viewport.layoutSize.height)
+                        .clipped()
+                        .scaleEffect(viewport.scale)
+                        .frame(width: geo.size.width, height: geo.size.height)
+                }
             }
+            .background(Color(red: 0.06, green: 0.07, blue: 0.09).ignoresSafeArea())
             .preferredColorScheme(.dark)
         }
+    }
+}
+
+// Keep type and controls proportional to the external window, in points.
+// The logical canvas widens on ultrawide displays without stretching the interface.
+private struct TVLauncherViewport {
+    let layoutSize: CGSize
+    let scale: CGFloat
+
+    init(size: CGSize) {
+        let reference = CGSize(width: 896, height: 504)
+        let scale = min(size.width / reference.width, size.height / reference.height)
+        self.scale = scale
+        layoutSize = CGSize(width: min(size.width / scale, 1240), height: size.height / scale)
     }
 }
 

@@ -22,6 +22,10 @@ static const SettingChoice setting_choices_stick_dead_zone[] = {{"game", "Game (
 static const SettingChoice setting_choices_prompts[] = {{"auto", "Auto"}, {"playstation", "PlayStation"}, {"xbox", "Xbox"}, {"nintendo", "Nintendo"}};
 static const SettingChoice setting_choices_textures[] = {{"off", "OFF"}, {"on", "ON"}};
 static const SettingChoice setting_choices_font[] = {{"original", "Original"}, {"sharp", "Sharp"}};
+static const SettingChoice setting_choices_shadows[] = {{"0", "OFF"}, {"1", "ON"}};
+static const SettingChoice setting_choices_lens_flare[] = {{"0", "OFF"}, {"1", "ON"}};
+static const SettingChoice setting_choices_particles[] = {{"0", "OFF"}, {"1", "ON"}};
+static const SettingChoice setting_choices_native_vu[] = {{"off", "OFF"}, {"on", "ON"}};
 static const SettingChoice setting_choices_fps[] = {{"60", "60 fps"}, {"120", "120 fps"}, {"144", "144 fps"}, {"165", "165 fps"}, {"240", "240 fps"}, {"monitor", "Monitor"}};
 static const SettingChoice setting_choices_vsync[] = {{"0", "OFF"}, {"1", "ON"}};
 static const SettingChoice setting_choices_perf_counter[] = {{"0", "OFF"}, {"1", "ON"}};
@@ -40,6 +44,7 @@ static const SettingChoice setting_choices_touch_vibration[] = {{"0", "Off"}, {"
 static const SettingChoice setting_choices_touch_with_pad[] = {{"hide", "Hide"}, {"show", "Show"}};
 static const SettingChoice setting_choices_touch_tilt_strength[] = {{"0", "0%"}, {"10", "10%"}, {"20", "20%"}, {"30", "30%"}, {"40", "40%"}, {"50", "50%"}, {"60", "60%"}, {"70", "70%"}, {"80", "80%"}, {"90", "90%"}, {"100", "100%"}};
 static const SettingChoice setting_choices_names[] = {{"off", "Off"}, {"small", "Small"}, {"medium", "Medium"}, {"large", "Large"}};
+static const SettingChoice setting_choices_room_region[] = {{"auto", "Auto"}, {"weur", "EU West"}, {"eeur", "EU East"}, {"enam", "NA East"}, {"wnam", "NA West"}, {"apac-ne", "Asia NE"}, {"apac-se", "Asia SE"}, {"oc", "Oceania"}};
 static const SettingChoice setting_choices_auto_update[] = {{"ask", "Ask"}, {"on", "Automatic"}, {"off", "Off"}};
 static const SettingChoice setting_choices_discord[] = {{"off", "OFF"}, {"on", "ON"}};
 
@@ -57,6 +62,10 @@ static const SettingInfo setting_table[] = {
     {"prompts", "DHD_PROMPTS", "playstation", setting_choices_prompts, 4},
     {"textures", "DHD_TEXTURES", "on", setting_choices_textures, 2},
     {"font", "DHD_FONT", "sharp", setting_choices_font, 2},
+    {"shadows", "DHD_SHADOWS", "1", setting_choices_shadows, 2},
+    {"lens_flare", "DHD_LENS_FLARE", "1", setting_choices_lens_flare, 2},
+    {"particles", "DHD_PARTICLES", "1", setting_choices_particles, 2},
+    {"native_vu", "DHD_NATIVE_VU1", "off", setting_choices_native_vu, 2},
     {"fps", "DHD_FPS", "60", setting_choices_fps, 6},
     {"vsync", "DHD_VSYNC", "0", setting_choices_vsync, 2},
     {"perf_counter", "DHD_PERF_COUNTER", "0", setting_choices_perf_counter, 2},
@@ -75,6 +84,7 @@ static const SettingInfo setting_table[] = {
     {"touch_with_pad", "DHD_TOUCH_WITH_PAD", "hide", setting_choices_touch_with_pad, 2},
     {"touch_tilt_strength", "DHD_TOUCH_TILT_STRENGTH", "50", setting_choices_touch_tilt_strength, 11},
     {"names", "DHD_NAMES", "small", setting_choices_names, 4},
+    {"room_region", "DHD_NET_ROOM_REGION", "auto", setting_choices_room_region, 8},
     {"auto_update", "", "ask", setting_choices_auto_update, 3},
     {"discord", "DHD_DISCORD", "off", setting_choices_discord, 2},
 };

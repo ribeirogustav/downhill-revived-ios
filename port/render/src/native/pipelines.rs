@@ -11,7 +11,9 @@
 //!   (`native_pixel_blend`), 3 alpha only (no blend state).
 //! Bits 25..28 are private: a power-of-two source scale (S=E), or zero for generic. Bit 29
 //! (`TEXELS`): the draw reads a decoded texture's R32Uint texels (the `_u` entry points and the
-//! texels layout).
+//! texels layout). Bit 30 (`MESH`): a translated VU1 mesh draw (flag 4096, finding 164): the vertex
+//! stage is `native_mesh_vertex`, the layout has group 2 (the objects' records, finding 168) and
+//! back faces are culled; bit 31 (`MESH_TWO_SIDED`) with it: no culling (finding 167).
 //! The GS key's blend, depth and variant fields remain unchanged. The cache's key is 64 bits: this
 //! key, and above it (`SPEC_SHIFT`) the fragment stage's specialisation, `spec` (native.wgsl's
 //! `native_spec`; zero for the generic shader).
@@ -26,7 +28,7 @@
 //!
 //! Referee: `rustgs.py test ... -- --test native_keys`, and `--test device_smoke native`.
 use crate::device::Gpu;
-use crate::native::init::{scoped, Objects};
+use crate::native::init::{scoped_pipeline, Objects};
 use std::collections::HashMap;
 
 pub const VARIANT_PLAIN: u32 = 0;
@@ -36,6 +38,10 @@ pub const VARIANT_ALPHA_ONLY: u32 = 3;
 pub const TEXEL_SCALE_SHIFT: u32 = 25;
 /// The draw reads a decoded texture's texels (native.wgsl's `_u` entry points).
 pub const TEXELS: u32 = 1 << 29;
+/// A translated VU1 mesh draw (native.wgsl's `native_mesh_vertex`, back faces culled; finding 164).
+pub const MESH: u32 = 1 << 30;
+/// With MESH: both sides drawn (the loops without back-face culling; finding 167).
+pub const MESH_TWO_SIDED: u32 = 1 << 31;
 /// Where a cache key holds the draw's fragment specialisation (`spec`).
 pub const SPEC_SHIFT: u32 = 32;
 
@@ -140,6 +146,23 @@ pub fn blend_operation(d3d: u32) -> Option<wgpu::BlendOperation> {
     }
 }
 
+/// A draw's blend key and colour write mask without a blend that keeps the colour: Cs * 0 + Cd * 1
+/// (or Cd * 1 - Cs * 0) leaves every colour channel as it was, so the draw is the same without
+/// blending and with only its alpha channel written (the alpha blend is One / Zero, a plain write).
+/// Exact: a UNORM target clamps Cs to [0, 1] before blending, so Cs * 0 is 0. The GS makes it
+/// with A = B ((Cs - Cs) * As + Cd, native_blend), a draw that only writes Z or alpha. PowerVR
+/// Rogue's driver (1.13), which blends in the fragment program, does not create that pipeline
+/// (finding 176). A draw left with no channel and no Z write draws nothing (`render.rs` skips it).
+pub fn without_kept_colour(blend_key: u32, mask: u32) -> (u32, u32) {
+    let (src, dst, op) = (blend_key >> 1 & 31, blend_key >> 6 & 31, blend_key >> 11 & 7);
+    // D3D11 ZERO (1) and ONE (2); operations 0 and 1 are Add, 3 ReverseSubtract (blend_operation).
+    if blend_key & 1 != 0 && src == 1 && dst == 2 && matches!(op, 0 | 1 | 3) {
+        (0, mask & 8)
+    } else {
+        (blend_key, mask)
+    }
+}
+
 /// The depth function of a key's depth field (0-4: never, always, gequal, greater, equal; 5-7
 /// always).
 fn depth_compare(function: u32) -> wgpu::CompareFunction {
@@ -229,6 +252,24 @@ pub fn describe(key: u32) -> Result<PipelineDesc, String> {
     })
 }
 
+/// What a failed pipeline was (its log line, finding 176): the fragment entry point and
+/// specialisation, the blend state, the write mask and the depth state.
+fn summary(full: u64, d: &PipelineDesc) -> String {
+    let key = full as u32;
+    let blend = match &d.color.blend {
+        Some(b) => format!("{:?}/{:?} {:?}", b.color.src_factor, b.color.dst_factor, b.color.operation),
+        None => "none".into(),
+    };
+    let depth = match &d.depth {
+        Some(z) => format!("{:?}{}", z.depth_compare.unwrap_or(wgpu::CompareFunction::Always),
+                           if z.depth_write_enabled == Some(true) { " write" } else { "" }),
+        None => "none".into(),
+    };
+    format!("fs {}{} spec {:X} texel scale {}, blend {blend}, write mask {:X}, depth {depth}",
+            d.entry, if key & TEXELS != 0 { " (texels)" } else { "" }, full >> SPEC_SHIFT,
+            key >> TEXEL_SCALE_SHIFT & 15, d.color.write_mask.bits())
+}
+
 /// The vertex layout of every draw (`DhdrVertex`, 32 bytes): position xyz, stqf, rgba bytes.
 const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 3] = [
     wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 0, shader_location: 0 },
@@ -244,12 +285,17 @@ struct Sources {
     dual_module: Option<wgpu::ShaderModule>,
     layout: wgpu::PipelineLayout,
     texels_layout: wgpu::PipelineLayout,
+    /// The mesh draws' (group 2: their object records; finding 168).
+    mesh_layout: Option<wgpu::PipelineLayout>,
+    mesh_texels_layout: Option<wgpu::PipelineLayout>,
 }
 
 impl Sources {
     fn of(objects: &Objects) -> Sources {
         Sources { module: objects.module.clone(), dual_module: objects.dual_module.clone(),
-                  layout: objects.draw_layout.clone(), texels_layout: objects.texels_draw_layout.clone() }
+                  layout: objects.native_draw_layout.clone(), texels_layout: objects.native_texels_draw_layout.clone(),
+                  mesh_layout: objects.mesh_draw_layout.clone(),
+                  mesh_texels_layout: objects.mesh_texels_draw_layout.clone() }
     }
 }
 
@@ -258,11 +304,19 @@ fn build(gpu: &Gpu, objects: &Sources, full: u64, d: &PipelineDesc) -> Result<wg
     let key = full as u32;
     let spec = (full >> SPEC_SHIFT) as u32;
     let texels = key & TEXELS != 0;
-    let entry = match (d.entry, texels) {
-        ("native_pixel", true) => "native_pixel_u",
-        ("native_pixel_blend", true) => "native_pixel_blend_u",
-        ("native_pixel_dual", true) => "native_pixel_dual_u",
-        (e, _) => e,
+    let mesh = key & MESH != 0;
+    let entry = match (d.entry, texels, mesh) {
+        ("native_pixel", true, false) => "native_pixel_u",
+        ("native_pixel_blend", true, false) => "native_pixel_blend_u",
+        ("native_pixel_dual", true, false) => "native_pixel_dual_u",
+        // a mesh draw's MeshVaryings (native.wgsl's native_pixel*_mesh)
+        ("native_pixel", false, true) => "native_pixel_mesh",
+        ("native_pixel_blend", false, true) => "native_pixel_blend_mesh",
+        ("native_pixel_dual", false, true) => "native_pixel_dual_mesh",
+        ("native_pixel", true, true) => "native_pixel_u_mesh",
+        ("native_pixel_blend", true, true) => "native_pixel_blend_u_mesh",
+        ("native_pixel_dual", true, true) => "native_pixel_dual_u_mesh",
+        (e, _, _) => e,
     };
     let fragment_module = if d.dual_module {
         objects
@@ -292,16 +346,24 @@ fn build(gpu: &Gpu, objects: &Sources, full: u64, d: &PipelineDesc) -> Result<wg
     };
     Ok(gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("native draw"),
-        layout: Some(if texels { &objects.texels_layout } else { &objects.layout }),
+        layout: Some(match (mesh, texels) {
+            (false, false) => &objects.layout,
+            (false, true) => &objects.texels_layout,
+            (true, false) => objects.mesh_layout.as_ref().ok_or_else(|| "gs native: no mesh layout (browser)".to_string())?,
+            (true, true) => objects.mesh_texels_layout.as_ref().ok_or_else(|| "gs native: no mesh layout (browser)".to_string())?,
+        }),
         vertex: wgpu::VertexState {
             module: &objects.module,
-            entry_point: Some("native_vertex"),
+            entry_point: Some(if mesh { "native_mesh_vertex" } else { "native_vertex" }),
             compilation_options: crate::native::init::compilation_options(),
             buffers: &[vertex],
         },
+        // A mesh's triangles come in the winding that leaves the VU's back faces with a positive
+        // area in GS pixels (y down): clockwise in clip space (vu1_mesh.inc).
         primitive: wgpu::PrimitiveState {
             topology: wgpu::PrimitiveTopology::TriangleList,
-            cull_mode: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: if mesh && key & MESH_TWO_SIDED == 0 { Some(wgpu::Face::Back) } else { None },
             ..Default::default()
         },
         depth_stencil: d.depth.clone(),
@@ -342,8 +404,9 @@ impl Worker {
             // Ends when the Pipelines (the sender) is dropped.
             while let Ok((key, d)) = inbox.recv() {
                 let start = std::time::Instant::now();
-                let pipe = scoped(gpu, &format!("native pipeline {key:X}"), || build(gpu, &sources, key, &d))
-                    .and_then(|r| r);
+                let pipe = scoped_pipeline(gpu, &format!("native pipeline {key:X}"), || build(gpu, &sources, key, &d))
+                    .and_then(|r| r)
+                    .map_err(|e| format!("{e} ({})", summary(key, &d)));
                 let took = start.elapsed().as_secs_f64();
                 if took > 0.25 {
                     crate::host::log(&format!("gs native: specialised pipeline {key:X} built in {took:.2} s (worker)"));
@@ -452,7 +515,9 @@ impl Pipelines {
             let d = describe(key as u32)?;
             #[cfg(not(target_arch = "wasm32"))]
             let start = std::time::Instant::now();
-            let pipe = scoped(gpu, &format!("native pipeline {key:X}"), || build(gpu, &Sources::of(objects), key, &d))??;
+            let pipe = scoped_pipeline(gpu, &format!("native pipeline {key:X}"), || build(gpu, &Sources::of(objects), key, &d))
+                .and_then(|r| r)
+                .map_err(|e| format!("{e} ({})", summary(key, &d)))?;
             #[cfg(not(target_arch = "wasm32"))]
             {
                 let took = start.elapsed().as_secs_f64();
@@ -862,7 +927,26 @@ pub(crate) mod gputimes {
 
 #[cfg(test)]
 mod tests {
-    use super::spec;
+    use super::{spec, without_kept_colour};
+
+    /// Cs * 0 + Cd * 1 (and Cd * 1 - Cs * 0) loses its blend and its colour channels; every other
+    /// blend stays as it is.
+    #[test]
+    fn kept_colour_is_not_blended() {
+        let key = |src: u32, dst: u32, op: u32| 1 | src << 1 | dst << 6 | op << 11;
+        assert_eq!(without_kept_colour(key(1, 2, 1), 15), (0, 8));
+        assert_eq!(without_kept_colour(key(1, 2, 1), 7), (0, 0));
+        assert_eq!(without_kept_colour(key(1, 2, 0), 7), (0, 0));
+        assert_eq!(without_kept_colour(key(1, 2, 3), 15), (0, 8));
+        // Cs * 0 - Cd is not Cd; other factors read Cs.
+        assert_eq!(without_kept_colour(key(1, 2, 2), 7), (key(1, 2, 2), 7));
+        assert_eq!(without_kept_colour(key(1, 6, 1), 7), (key(1, 6, 1), 7));
+        assert_eq!(without_kept_colour(key(2, 2, 1), 7), (key(2, 2, 1), 7));
+        assert_eq!(without_kept_colour(key(5, 6, 1), 15), (key(5, 6, 1), 15));
+        // Min and Max ignore the factors; no blend stays no blend.
+        assert_eq!(without_kept_colour(key(1, 2, 4), 7), (key(1, 2, 4), 7));
+        assert_eq!(without_kept_colour(1 << 1 | 2 << 6, 7), (1 << 1 | 2 << 6, 7));
+    }
 
     /// `spec` keeps only what the draw's path reads, so draws that differ elsewhere share a pipeline.
     #[test]

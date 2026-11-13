@@ -168,7 +168,7 @@
 "Controller Stick Deadzone" = "手柄摇杆死区";
 
 "Customize Controls" = "自定义控制";
-"Arrange and remap touch controls" = "排列并重新映射触控按钮";
+"Arrange and remap touch controls" = "编辑触控布局";
 "Drag controls, choose their actions and save a layout for each orientation." = "拖动控件、选择动作，并为每种屏幕方向保存布局。";
 "Physical Controllers" = "实体手柄";
 "Controller button bindings" = "手柄按键映射";
@@ -218,9 +218,16 @@
 
 "Control options" = "控件选项";
 "Drag to move. Rotate the device to edit the other orientation." = "拖动以移动。旋转设备以编辑另一方向。";
+"Tap to select. Drag to move. Rotate to change layout." = "轻点选择，拖动移动。旋转设备可切换布局。";
 
 "Undo" = "撤销";
 "Redo" = "重做";
 "Collapse tools" = "收起工具";
 "Expand tools" = "展开工具";
 "Hidden" = "已隐藏";
+
+// Individual touch control sizing (25% to 600%).
+"Smaller" = "缩小";
+"Larger" = "放大";
+"Reset to 100%" = "恢复至 100%";
+"Drag controls and set each button's size individually (25% to 600%). Save separate layouts for portrait and landscape." = "拖动控件并分别调整每个按钮的大小（25% 至 600%）。可以分别保存竖屏和横屏布局。";

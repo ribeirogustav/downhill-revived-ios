@@ -16,7 +16,8 @@ import tempfile
 import unittest
 import zipfile
 import stat
-from unittest.mock import patch
+from unittest.mock import patch, Mock
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[3]
 SPEC = importlib.util.spec_from_file_location('ios_build', ROOT / 'port/ios/build_ios.py')
@@ -88,6 +89,7 @@ class BuildTests(unittest.TestCase):
             app.mkdir(parents=True)
             if profile: (app / 'embedded.mobileprovision').write_bytes(b'test-only')
             calls = []
+            unsigned_package = Mock()
             def run(cmd, **kwargs):
                 calls.append(cmd)
                 if verification_fails and cmd[0] == 'codesign':
@@ -97,12 +99,13 @@ class BuildTests(unittest.TestCase):
                  patch.object(build.sys, 'argv', ['build_ios.py', '--team', 'TESTTEAM01', *args]), \
                  patch.object(build, 'OUT', out), patch.object(build, 'preflight'), \
                  patch.object(build, 'prepare_native_core'), patch.object(build, 'prepare_project_bundle'), \
-                 patch.object(build, 'package_ipa') as package, patch.object(build.subprocess, 'run', side_effect=run):
+                 patch.object(build, 'package_ipa') as package, patch.object(build.subprocess, 'run', side_effect=run), \
+                 patch.dict(sys.modules, {'package_unsigned': SimpleNamespace(package_unsigned_ipa=unsigned_package)}):
                 try:
                     result = build.main()
                 except (RuntimeError, subprocess.CalledProcessError) as error:
-                    return error, calls, package.call_count
-                return result, calls, package.call_count
+                    return error, calls, package.call_count + unsigned_package.call_count
+                return result, calls, package.call_count + unsigned_package.call_count
 
     def test_xcode_signs_selected_team_before_packaging_and_installing(self):
         result, calls, packages = self.run_mock_app_build(['--install', '--device', 'TEST-DEVICE'])
@@ -132,6 +135,107 @@ class BuildTests(unittest.TestCase):
         self.assertIn('CODE_SIGNING_ALLOWED=NO', calls[0])
         self.assertEqual(len(calls), 1)
         self.assertEqual(packages, 1)
+
+    def test_both_builds_once_and_keeps_signed_and_unsigned_packages_separate(self):
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            calls = []
+
+            def run(cmd, **kwargs):
+                calls.append(cmd)
+                if cmd[0] == 'xcodebuild':
+                    derived = Path(cmd[cmd.index('-derivedDataPath') + 1])
+                    app = derived / 'Build/Products/Release-iphoneos/Downhill Revived.app'
+                    app.mkdir(parents=True)
+                    (app / 'Downhill Revived').write_bytes(b'test executable')
+                    if 'CODE_SIGNING_ALLOWED=YES' in cmd:
+                        (app / 'embedded.mobileprovision').write_bytes(b'test profile')
+                        (app / '_CodeSignature').mkdir()
+                        (app / '_CodeSignature/CodeResources').write_bytes(b'test signature')
+                return subprocess.CompletedProcess(cmd, 0)
+
+            def public_package(app, output, *, update_canonical):
+                self.assertFalse(update_canonical)
+                self.assertFalse((app / 'embedded.mobileprovision').exists())
+                return build.package_ipa(app, output)
+
+            pack = SimpleNamespace(package_unsigned_ipa=Mock(side_effect=public_package))
+            args = ['--both', '--rebuild-core', '--team', 'TESTTEAM01', '--device', 'TEST-DEVICE',
+                    '--allow-provisioning-updates']
+            with patch.object(build.sys, 'platform', 'darwin'), patch.object(build, 'OUT', out), \
+                 patch.object(build, 'preflight'), patch.object(build, 'prepare_native_core') as core, \
+                 patch.object(build, 'prepare_project_bundle'), patch.object(build.subprocess, 'run', side_effect=run), \
+                 patch.dict(sys.modules, {'package_unsigned': pack}):
+                self.assertEqual(build.main(args), 0)
+                core.assert_called_once_with(None, 4)
+
+            self.assertEqual(len(calls), 3)
+            self.assertIn('CODE_SIGNING_ALLOWED=NO', calls[0])
+            self.assertIn('DEVELOPMENT_TEAM=', calls[0])
+            self.assertNotIn('-allowProvisioningUpdates', calls[0])
+            self.assertIn('CODE_SIGNING_ALLOWED=YES', calls[1])
+            self.assertIn('DEVELOPMENT_TEAM=TESTTEAM01', calls[1])
+            self.assertIn('id=TEST-DEVICE', calls[1])
+            self.assertIn('-allowProvisioningDeviceRegistration', calls[1])
+            self.assertEqual(calls[2][:4], ['codesign', '--verify', '--deep', '--strict'])
+            version, _ = build.version()
+            names = {p.name: p for p in out.glob('*.ipa')}
+            self.assertEqual(set(names), {f'DownhillRevived-{version}-GitHub-unsigned.ipa',
+                                          f'DownhillRevived-{version}-Pessoal-signed.ipa'})
+            with zipfile.ZipFile(names[f'DownhillRevived-{version}-GitHub-unsigned.ipa']) as public:
+                self.assertFalse(any('mobileprovision' in name or '_CodeSignature' in name
+                                     for name in public.namelist()))
+            with zipfile.ZipFile(names[f'DownhillRevived-{version}-Pessoal-signed.ipa']) as personal:
+                self.assertEqual(personal.read('Payload/Downhill Revived.app/embedded.mobileprovision'),
+                                 b'test profile')
+                self.assertIn('Payload/Downhill Revived.app/_CodeSignature/CodeResources', personal.namelist())
+
+    def test_public_packager_accepts_already_unsigned_app_without_canonical_copy(self):
+        spec = importlib.util.spec_from_file_location('ios_public_package', ROOT / 'port/ios/package_unsigned.py')
+        package = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(package)
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            app = root / 'Downhill Revived.app'
+            app.mkdir()
+            (app / 'Downhill Revived').write_bytes(b'test executable')
+            (app / 'embedded.mobileprovision').write_bytes(b'test profile')
+            (app / '_CodeSignature').mkdir()
+            (app / '_CodeSignature/CodeResources').write_bytes(b'test signature')
+            output = root / 'GitHub-unsigned.ipa'
+
+            def run(cmd, **kwargs):
+                if cmd[:2] == ['codesign', '-d']:
+                    return subprocess.CompletedProcess(cmd, 1, '', 'code object is not signed at all')
+                self.assertEqual(cmd[:2], ['strip', '-x'])
+                return subprocess.CompletedProcess(cmd, 0)
+
+            with patch.object(package, 'OUT', root), patch.object(package.subprocess, 'run', side_effect=run):
+                self.assertEqual(package.package_unsigned_ipa(app, output, update_canonical=False), output)
+            with zipfile.ZipFile(output) as ipa:
+                self.assertEqual(ipa.namelist(), ['Payload/Downhill Revived.app/Downhill Revived'])
+            self.assertFalse((root / 'DownhillRevived.ipa').exists())
+            self.assertTrue((app / 'embedded.mobileprovision').is_file())
+
+    def test_failed_signing_keeps_previous_ipa_pair(self):
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            version, _ = build.version()
+            previous = {}
+            for suffix in ('GitHub-unsigned', 'Pessoal-signed'):
+                path = out / f'DownhillRevived-{version}-{suffix}.ipa'
+                previous[path] = suffix.encode()
+                path.write_bytes(previous[path])
+
+            pack = SimpleNamespace(package_unsigned_ipa=Mock(
+                side_effect=lambda app, path, **kwargs: path.write_bytes(b'new unsigned')))
+            with patch.object(build, 'OUT', out), \
+                 patch.object(build, 'build_application', side_effect=[out / 'Test.app', RuntimeError('signing failed')]), \
+                 patch.dict(sys.modules, {'package_unsigned': pack}):
+                with self.assertRaisesRegex(RuntimeError, 'signing failed'):
+                    build.build_both('Release', 'TESTTEAM01', version)
+            self.assertEqual({p: p.read_bytes() for p in previous}, previous)
+            self.assertEqual(set(out.iterdir()), set(previous))
 
     def test_unsigned_install_is_rejected(self):
         with patch.object(build.sys, 'argv', ['build_ios.py', '--unsigned', '--install']):
@@ -190,7 +294,7 @@ class BuildTests(unittest.TestCase):
             stick = root / 'port/hle/stick.h'
             stick.parent.mkdir(parents=True)
             stick.write_bytes((ROOT / 'port/hle/stick.h').read_bytes())
-            for name in ('port/render/include/dhd_settings.h', 'port/hle/controls_table.h'):
+            for name in ('port/render/include/dhd_settings.h', 'port/hle/controls_table.h', 'port/include/version.h'):
                 destination = root / name
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_bytes((ROOT / name).read_bytes())
@@ -200,6 +304,10 @@ class BuildTests(unittest.TestCase):
                 build.prepare_project_bundle(team='TESTTEAM01')
             text = (project / 'project.yml').read_text()
             self.assertIn('"-ldhd_ios"', text)
+            version, code = build.version()
+            plist = plistlib.loads((project / 'Info.plist').read_bytes())
+            self.assertEqual(plist['CFBundleShortVersionString'], version)
+            self.assertEqual(plist['CFBundleVersion'], str(code * 100 + 1))
             self.assertIn('GCC_OPTIMIZATION_LEVEL: "3"', text)
             self.assertIn('DEVELOPMENT_TEAM: "TESTTEAM01"', text)
             self.assertTrue((project / 'Render/performance_stats.c').is_file())
@@ -216,7 +324,7 @@ class BuildTests(unittest.TestCase):
             stick = Path(td) / 'port/hle/stick.h'
             stick.parent.mkdir(parents=True)
             stick.write_bytes((ROOT / 'port/hle/stick.h').read_bytes())
-            for name in ('port/render/include/dhd_settings.h', 'port/hle/controls_table.h'):
+            for name in ('port/render/include/dhd_settings.h', 'port/hle/controls_table.h', 'port/include/version.h'):
                 destination = Path(td) / name
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_bytes((ROOT / name).read_bytes())

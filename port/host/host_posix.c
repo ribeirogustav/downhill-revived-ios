@@ -33,7 +33,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef __SWITCH__
 #include <sys/mman.h>
+#endif
 #include <sys/utsname.h>
 #include <time.h>
 #include <unistd.h>
@@ -55,6 +57,9 @@ unsigned host_exe_path(char *out, unsigned size)
        stands for dhd.exe's (android_main.c), so dhd.ini, saves and dhd.log go there. */
     const char *android_exe_path(void);
     int k = snprintf(out, size, "%s", android_exe_path());
+    return k > 0 && (unsigned)k < size ? (unsigned)k : 0;
+#elif defined(__SWITCH__)
+    int k = snprintf(out, size, "sdmc:/switch/DownhillRevived/dhd64");
     return k > 0 && (unsigned)k < size ? (unsigned)k : 0;
 #elif defined(__APPLE__)
 #include <TargetConditionals.h>
@@ -168,12 +173,17 @@ static uintptr_t os_page(void)
 
 int host_mem_protect(uint32_t at, uint32_t size, int protection)
 {
+#ifdef __SWITCH__
+    (void)at; (void)size; (void)protection;
+    return 1;
+#else
     /* Page-align the range the way the OS requires (its page: 16 KiB on Apple silicon and some
        Android devices); the caller's exact range keeps its protection inside it. */
     uintptr_t page = os_page(), base = (uintptr_t)GUEST(at);
     uintptr_t lo = base & ~(page - 1), hi = (base + size + page - 1) & ~(page - 1);
     if (hi < base) return 0;
     return mprotect((void *)lo, hi - lo, protection == HOST_MEM_NOACCESS ? PROT_NONE : PROT_READ | PROT_WRITE) == 0;
+#endif
 }
 
 /* The access-fault guard: a SIGSEGV/SIGBUS handler for the thread that
@@ -220,6 +230,10 @@ static void guard_fault(int sig, siginfo_t *info, void *ctx)
 
 int host_fault_guard(int (*on_fault)(uint32_t address))
 {
+#ifdef __SWITCH__
+    (void)on_fault;
+    return 1;
+#else
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
     sa.sa_sigaction = guard_fault;
@@ -237,6 +251,7 @@ int host_fault_guard(int (*on_fault)(uint32_t address))
     guard_on_fault = on_fault;
     guard_armed = 1;
     return 1;
+#endif
 }
 
 int host_fault_guard_here(void) { return guard_armed; }
@@ -249,7 +264,11 @@ void host_code_range(uintptr_t *lo, uintptr_t *hi)
     static uintptr_t base, extent;
     static int have;
     *lo = *hi = 0;
-#ifdef __APPLE__
+#ifdef __SWITCH__
+    if (!have) {
+        base = 0; extent = 0; have = 1;
+    }
+#elif defined(__APPLE__)
     if (!have) {
         Dl_info self;
         unsigned long size = 0;

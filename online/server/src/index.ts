@@ -1,7 +1,8 @@
 // Worker entry: routes lobby-list requests to the LobbyIndex and WebSockets to a Room by code.
-import { PROTOCOL, minVersionOf, randomCode } from "./protocol";
+import { CODE_LENGTH, P2P_CODE_LENGTH, PROTOCOL, minVersionOf, randomCode } from "./protocol";
 import { edgeStore, latestResponse, upstreamFetch } from "./latest";
-import { locationHintFor, placeOf, regionOfPlace, sortForRegion } from "./region";
+import { placeOf, placeRoom, regionChoice, regionOfPlace, sortForRegion } from "./region";
+import { WORKER_VERSION_HEADER, versionHeader, versionOf } from "./rollout";
 import {
   RATE_MESSAGE, banMessage, cleanup, findBan, ipHash, onlineState, overLimit, refuseSocket, type GuardEnv,
 } from "./guard";
@@ -67,17 +68,27 @@ export default {
       // The address's hash for the room's moderation log (src/room.ts); never one a client sent.
       headers.delete("x-dhd-ip-hash");
       if (ip) headers.set("x-dhd-ip-hash", ip);
+      // This Worker's version, so the room learns of a newer deployment (src/rollout.ts, finding
+      // 184); never one a client sent. A room on older code ignores it.
+      headers.delete(WORKER_VERSION_HEADER);
+      const worker = versionOf(env.CF_VERSION_METADATA);
+      if (worker) headers.set(WORKER_VERSION_HEADER, versionHeader(worker));
       if (m[1] === "new") {
         headers.set("x-dhd-create", "1");
-        // A new room runs near its creator: the hint from their continent and country, not from the
-        // Cloudflare location their ISP happened to reach (finding 135). Only the first get() of an
-        // object reads a hint; joining by code below needs none.
+        // A new room runs where its creator picked (`?region=`, finding 181), else near them: Auto
+        // goes by the Cloudflare location they reached, then by their country and continent
+        // (src/region.ts placeRoom). Only the first get() of an object reads a hint; joining by
+        // code below needs none. Games up to 0.7.13 send no region: Auto.
+        const params = new URL(request.url).searchParams;
         const place = placeOf(request);
-        const hint = locationHintFor(place);
+        const { hint, how } = placeRoom(place, regionChoice(params.get("region")));
+        // `?transport=p2p`: a P2P room (finding 186), with a code one character longer, so a game
+        // knows the kind of room from its code alone; anything else is an SFU room.
+        const transport = params.get("transport") === "p2p" ? "p2p" : undefined;
         for (let attempt = 0; attempt < 8; attempt++) {
-          const code = randomCode();
+          const code = randomCode(transport ? P2P_CODE_LENGTH : CODE_LENGTH);
           const room = env.ROOM.get(env.ROOM.idFromName(code), hint ? { locationHint: hint } : undefined);
-          if (await room.claim(code, { hint: hint ?? "", createdIn: regionOfPlace(place), createdFrom: place.colo ?? "" }))
+          if (await room.claim(code, { hint: hint ?? "", how, createdIn: regionOfPlace(place), createdFrom: place.colo ?? "" }, transport))
             return room.fetch(new Request(request, { headers }));
         }
         return json({ error: "Could not allocate a room code" }, 503);

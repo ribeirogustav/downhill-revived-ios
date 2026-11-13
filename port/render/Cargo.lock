@@ -484,6 +484,7 @@ dependencies = [
 name = "dhd_net"
 version = "1.0.0"
 dependencies = [
+ "dhd_star",
  "httparse",
  "ring",
  "rustls",
@@ -540,6 +541,14 @@ dependencies = [
 [[package]]
 name = "dhd_settings"
 version = "1.0.0"
+
+[[package]]
+name = "dhd_star"
+version = "1.0.0"
+dependencies = [
+ "serde_json",
+ "wasm-bindgen",
+]
 
 [[package]]
 name = "digest"
@@ -1642,8 +1651,6 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 [[package]]
 name = "sctp-proto"
 version = "0.10.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "28aca56f649fa088cbdda778a5121f2227995ed057e77de462112b2e5890d591"
 dependencies = [
  "bytes",
  "crc",

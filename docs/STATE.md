@@ -1,27 +1,10 @@
 # State
 
-## iOS control customization
+## iOS
 
-Finding 177 provides fullscreen black touch editing at the real window size.
-Build 71206 adds per-orientation Undo/Redo, a collapsible floating panel,
-action labels and gesture cancellation on resize/rotation. It shares its safe-area viewport with gameplay, supports dragging and
-live button size, floating tools, orientation drafts and atomic Done. Existing
-layouts import into touch_layouts_v2.json without deleting the previous files.
-Counted editing scopes keep native input blocked across fullscreen presentation.
-Physical bindings and new 5 percent deadzone defaults are retained. The 25
-portable tests pass; six executable Swift model/store/viewport/history checks require
-macOS and are skipped here. Swift syntax scans pass. Xcode compilation,
-SwiftUI rendering, migration execution and on-device validation remain pending.
-
-
-## iOS on 0.7.12
-
-Finding 176 integrates the complete v0.7.12 tag into the iOS fork. Build 71201.
-Touch input uses the shared safe stick encoding, and the launcher offers a
-separate physical-controller deadzone, default 15 percent. The 24 portable iOS
-tests and patch guard pass. Full builds, device gameplay and state traces are
-pending because this environment has no Xcode, LLVM/WASI or test disc.
-
+The iOS port uses upstream 0.7.16 with the SwiftUI launcher, Metal and external display support.
+The touch editor saves separate layouts for each device class and orientation, with individual
+button sizes from 25% to 600%. See [iOS integration](IOS_UPSTREAM_0.7.16.md) for build and validation status.
 
 What is true now, per area, and where to read more. The dated log of what each lane changed is
 `docs/STATE-LOG.md`; the findings index is `docs/findings/README.md` (read its area map, then the
@@ -69,7 +52,8 @@ in `online/server/wrangler.jsonc`, player defaults are `port/render/settings/src
   each step costs and what is cached: its "Build times" section (finding 151).
 - **Browser:** `port/web/build.py build/wasm/dhd_core.wasm` (findings 083, 087).
 - **Android:** `port/android/build_apk.py` (debug, `--release` with the release key named by the
-  `DHD_ANDROID_*` variables; findings 091, 143).
+  `DHD_ANDROID_*` variables; findings 091, 143). Android 10 (API 29) and later: calls from newer
+  APIs are chosen at run time (finding 191).
 - **Launcher:** `port/launcher` (Tauri; settings, rider name, updates, disc choice; finding 093;
   native window buttons on macOS, finding 150).
 - **Releases:** `port/tools/package_release.py` builds, checks and packages each platform
@@ -87,37 +71,54 @@ in `online/server/wrangler.jsonc`, player defaults are `port/render/settings/src
 - Inline asm runs on an emulated EE/FPU/VU0 register file (`port/runtime/ps2asm.c`,
   `ps2asm_aot.py`); EE float rounding follows PCSX2's (finding 026). VU0 microprograms are native
   or compiled (`vu0_micro.c`, `vu0_aot.py`); VU1 runs compiled blocks plus native kernels
-  (`vu1_aot.py`, `vu1_native_clip.py`), checked against PCSX2's interpreter (findings 030, 090).
+  (`vu1_aot.py`, `vu1_native_clip.py`), checked against PCSX2's interpreter (findings 030, 090),
+  and, with Native VU (the players' default but in the browser, finding 198), the translated
+  batch loops as GPU shaders instead (findings 164, 167, 194). The emulated path for those loops
+  remains as the fallback, the setting's off and the browser's path until it is deleted (root
+  AGENTS.md).
 - GS: GS memory and registers in C (`port/gs/`); the Rust renderer (`port/render`, wgpu: DX12 or
   Vulkan on Windows, Metal on Apple, Vulkan on Linux and Android, WebGPU in the browser) behind
   the shared C front ends `gpu_exact.inc` (exact: the PS2's pixels, the reference) and
-  `native_core.inc` (native, upscaled, the player default). Findings 084-086, 088, 131.
+  `native_core.inc` (native, upscaled, the player default). Findings 084-086, 088, 131. A lost GPU
+  device ends the game with a message box instead of a frozen picture (desktop and Android; tried on
+  Direct3D 12; finding 171). Dual-source blending is off on Intel GPUs (`device::dual_source`;
+  `DHD_WGPU_DUAL_SOURCE=0|1` overrides; finding 188): an Ice Lake GPU hung on it (issue #58).
+  Upscaled bilinear sprites interpolate at output resolution (foliage and particles); only
+  nearest-filtered sprites retain GS-pixel snapping (finding 196).
 - **The game clock:** one delta-time clock at every frame rate, 60 included and online: each
   paced frame steps by the real time since the last, between one step at the selected rate and two
   fields (finding 139, `port/hle/fps.c`, `port/hle/kernel.c`). Deterministic runs keep the
   original clock, so state traces are unchanged. Replays, the attract demo and ghosts run on a
-  field grid (finding 142).
+  field grid (finding 142). The track's actors (helicopters, birds, animals, walkers, crowds) step
+  by game time too (`port/patches_fps.py`, finding 193); a few steering loops are still up to
+  25 % off at 240 (issue #76).
 - Host services: one code path on SDL3 for every platform (finding 099): `host_sdl.c` (files,
   clock, frame waits, display, threads, the error box), `sdl_host.c` (SDL's loop on the main
   thread, the game on its own thread), `present.c` (the window), `sound_out_sdl.c` (one sound
-  output), controllers through SDL only (findings 059, 134), touch controls on phones
-  (`port/hle/touch.c`, finding 141).
+  output), controllers through SDL only (findings 059, 134; Swap L1/L2 and R1/R2 per controller,
+  finding 189), touch controls on phones (`port/hle/touch.c`, finding 141; the game's codes from
+  the touch pause menu, finding 189).
 - dhd.log on every platform, with `perf:` lines on speed and what limits it (finding 129) and
   `net:` lines online (finding 135). What the game can detect goes in the log. Each start keeps
   the one before as dhd-previous.log; on Android the log says how the run before ended (Android's
-  exit record and tombstone), and a crash dialog and the icon's shortcut share it (finding 152).
+  exit record and tombstone; on Android 10 only the game's own crash report, finding 191), and a
+  crash dialog and the icon's shortcut share it (finding 152).
 
 ## What players get
 
 - REVIVED SETTINGS at the top of the game's options, with Display, Graphics, Controls, Online
   and Game tabs (finding 163), saved to dhd.ini (findings 064, 101): resolution scale
-  (capped by GPU memory and said so, finding 136), window mode, widescreen with the HUD anchored
-  and no 4:3 screens left (findings 056, 140), frame rate 60-240 or Monitor (findings 067, 139),
-  V-Sync, texture packs in PCSX2's format (finding 057), the sharp font (finding 058), movies,
+  (capped by GPU memory and said so, finding 136), window mode, widescreen with the HUD anchored,
+  no 4:3 screens left and VU1 sprites at their 4:3 shape (findings 056, 140, 192), frame rate 60-240 or Monitor (findings 067, 139),
+  V-Sync, texture packs in PCSX2's format (finding 057), the sharp font (finding 058), a
+  Performance group (shadows and sun glow, lens flare, particles; finding 183), Native VU
+  (on by default: VU1 programs as GPU shaders, falls back to the emulated VU when
+  the GPU can't; findings 164, 167, 194, 198), movies,
   vibration, stick dead zone and button icons (finding 134), the keys and controller buttons for
   the PS2 pad's buttons, per player, in the game and the launcher (Controls, finding 157), FPS &
-  Ping counter (finding 120), online name size (finding 163), Unlock All (finding 095), EXIT GAME. dhd.ini has one implementation, the Rust crate
-  `dhd_settings` (`port/render/settings`), used by the game, the launcher and the browser.
+  Ping counter (findings 120, 169), online name size (finding 163), Unlock All (finding 095),
+  EXIT GAME. dhd.ini has one implementation, the Rust crate `dhd_settings`
+  (`port/render/settings`), used by the game, the launcher and the browser.
 - The launcher holds settings, rider name and updates on every desktop platform, decides the one
   data folder (`DHD_SETTINGS`, `DHD_MEMCARD_DIR`, `DHD_DATA_DIR`), updates from `latest.json`
   with a backup through the server's `/v1/latest` (findings 093, 125, 138). A phone has no
@@ -127,8 +128,9 @@ in `online/server/wrangler.jsonc`, player defaults are `port/render/settings/src
 
 ## Online play
 
-- Offered on Windows, macOS and Linux; not on Android or in the browser
-  (`host_service_net_offered`, finding 143).
+- SFU rooms (public, private, Quick Race) on Windows, macOS and Linux; P2P rooms there and on
+  Android and in the browser, which offer nothing else (`host_service_net_offered`, findings 143,
+  180, 186).
 - **State sync, never lockstep:** each PC runs its own one-player race at its own frame rate and
   shows the others, and on guests the host's AI riders, as puppet riders moved from snapshots
   (`port/hle/puppet.c`, findings 044, 047, 114). Hits are events; each game times its own finish.
@@ -136,19 +138,56 @@ in `online/server/wrangler.jsonc`, player defaults are `port/render/settings/src
 - Server: `online/server/` (Cloudflare Workers + Durable Objects) at `wss://dhd.skuza.app`, the
   game's default (dhd.ini `server =` or `DHD_NET_SERVER` override it). Rooms of up to 10
   (finding 123) that live across races (findings 118, 119), 25 tracks with Salt City MX and TD
-  (finding 166), Ready for the next race and MOSH by
-  the host's pick (finding 128), rooms placed near their creator (finding 135), rejoin by token
-  (finding 137). Protocol: `docs/online-protocol.md`; steps: `online/server/README.md`.
+  (finding 166) listed in Super Career order (finding 190), Ready for the next race and MOSH by
+  the host's pick (finding 128), rooms placed where their creator picks (ONLINE's Room Region row,
+  dhd.ini `room_region`) or, on Auto, by the Cloudflare location the creator reached, from measured
+  round trips (findings 135, 181), rejoin by token
+  (finding 137); a room connection lost in a race no longer ends it: the game races on over the
+  SFU and rejoins, the seat is kept 20 s (finding 175). A room runs at most 5 Realtime calls at
+  once and a timed-out call is an unknown outcome, not a failure (finding 182). A deploy
+  (`online/server/tools/deploy.mjs`: a watched 10 % canary, then 100 % or a rollback) restarts
+  rooms for the new code only in the lobby or at results; games rejoin in about 2 s (finding 184).
+  Protocol: `docs/online-protocol.md`; steps: `online/server/README.md`.
 - Abuse guard (finding 161): a kill switch in the moderation database (`moderate.mjs online
   off`), limits per address, caps per member, and
   bans by address hash or install id with a 14-day moderation log in D1, worked from
-  `online/server/tools/moderate.mjs` (no admin endpoint). No player gets another's address, its
+  `online/server/tools/moderate.mjs` (no admin endpoint). In an SFU room no player gets another's address, its
   hash or install id.
-- Race frames (finding 158): over Cloudflare Realtime SFU DataChannels, STATE unordered with no
-  retransmissions and EVENT reliable; the room sets up each racer's session and passes only that
-  racer's SDP. If UDP doesn't connect in 2 s, Cloudflare TURN over TLS on 443 with credentials
-  minted for that racer. 30 snapshots a second; the puppets' delay adapts per sender (50-150 ms).
-  Protocol 3.
+- P2P rooms (findings 180, 186): the creator's choice beside SFU rooms, private, by code (7
+  characters). A server room like any other (its rules, results, rejoin, region) whose race frames
+  travel over WebRTC data channels in a star around one member, the hub, which the room picks (the
+  creator, the next one when it leaves or can't do its work) and which forwards the others'
+  frames; a member who can't reach it directly races over the room's SFU, bridged by the hub. The
+  game warns that the room's players can see your network address. One send thread and one star
+  router (`port/render/star`) for the native games and the browser page. Windows and macOS tested; Android
+  builds it but was not run; the browser joins and races on the star (no SFU fallback there yet).
+- Race frames (findings 158, 177): over Cloudflare Realtime SFU DataChannels, STATE unordered with
+  no retransmissions and EVENT reliable (Cloudflare forwards STATE ordered and reliable anyway; the
+  client's vendored sctp-proto delivers it unordered, finding 173). One Realtime session per member
+  per room stay (finding 177): made when the member joins, kept across races with its
+  publications and subscriptions (a member who sits a race out loses its subscriptions at that
+  race's start and gets them back at its next grid); a race's missing pairs are subscribed at the
+  grid's lock, during the countdown, so a connected room is released as soon as its games
+  acknowledge the start. The room passes each member only its own SFU answer, channels and TURN
+  credentials, never a session id. If UDP doesn't connect in 2 s, Cloudflare TURN over TLS on 443
+  with credentials minted for that member, renewed between races once 35 minutes old. A racer
+  whose Realtime never connects leaves the race 10 s after its start message and the others race
+  on (finding 175); failed subscription closes are retried and a rejoin's channel list replaces
+  recycled channel ids (finding 179). A session on which the room closed subscriptions its game
+  never had has dead stream ids on Cloudflare's side (finding 187): the room replaces it once that
+  costs no race anything. A game whose race link brings nothing from the others 8 s after its
+  release tells the room, which gives it a new session in its race or takes it out of the race;
+  the host's start moment also goes over the room, and a game with no moment 75 s after loading
+  leaves the race instead of starting alone.
+- Protocol 4 (0.7.13, finding 169): a PC's riders of one tick go out bundled in STATE messages of
+  at most 1,000 bytes (one datagram), stamped with their moment on the server clock (the PONG
+  carries the server's time); each player's own rider 60 times a second, AI riders 30. Puppets are
+  drawn at the present: the newest snapshot carried forward by its velocity and angular velocity,
+  corrections fading in. Hits are
+  decided on the puppet as drawn. In a room the FPS & Ping counter shows "SERVER N MS", the round
+  trip to the room's server, and "RACE N MS", the round trip to Cloudflare's race network (the SFU
+  association's ICE checks); in a race the second line is "RIDERS N MS", the other riders'
+  snapshot delay (findings 169, 181).
 - Client: `port/net/` over `port/net/ws.h`, the Rust crate `dhd_net` (`port/render/net`:
   tungstenite over rustls for the lobby, str0m for the SFU with a vendored RustCrypto adapter,
   its own TURN client; webpki roots, no OS certificate store).
@@ -172,10 +211,27 @@ in `online/server/wrangler.jsonc`, player defaults are `port/render/settings/src
 ## Open
 
 - Phones: on the low-end profile (Realme RMX3930 (Unisoc T612), reproduced on a throttled Mi 11i)
-  2x races hold 60 with the profile-guided build and reach about 59.5 at the race start without
-  it; 4x does not hold 60 at the race start (GPU-bound). Findings 127, 146-149 say what is left;
-  finding 156 says where a frame's time goes on the phone and the desktops, and what replacing the
-  VU1 and GS emulation with native rendering would remove.
+  2x races hold 60 with the profile-guided build; finding 195 added 5.6-17 % over the route
+  (t612 2x 64.4 -> 68.0 fields/s, 4x 55.5 -> 64.5; more with Native VU on) and finding 197 another
+  7 % with Native VU off (race start 61.5 -> 65.9, the route 67.7 -> 72.4; on: +1 %); the release
+  APK needs a profile recorded with its file-name keys (`docs/BUILDING.md`; finding 197's is
+  `dhd-197.profdata`). 4x does not hold 60 at the race start (GPU-bound). Findings 127, 146-149,
+  195, 197 say what is left (197: the VU thread alone limits now); finding 156 says where a
+  frame's time goes on the phone and the desktops.
+- PowerVR GE8320 phones start since finding 170 and no longer close in the Bike Shop (finding 176:
+  a blend that keeps the colour is drawn unblended, a pipeline the driver refuses skips its draws);
+  not yet confirmed by the reporters (issues #56, #60).
+- The Mali-G52 (Redmi 9) at 2x: about 49.5 fields/s with every effect on (finding 174's
+  barriers), about 60 with the shadows, sun glow, lens flare and fog cut by a diagnostic build;
+  Performance Mode (finding 183) cuts those but fog. 60 at 2x with every effect on is not reached.
+- Native VU is the players' default (finding 198), and it is slower where the GPU limits: the
+  Redmi 9 at 2x 50.6 -> 48.7 fields/s over the route (the race 47.3 -> 44.8), the integrated
+  Radeon at 4x 122.1 -> 118.2; it gains where the CPU limits (finding 194). No driver that refuses
+  it has run it. The emulated path is deleted once players' logs show no fallbacks.
+- On Mali GPUs a picture stays in one encoder (finding 198): finding 195's encoder cut lost the
+  device on the Redmi 9's Mali-G52 in every full route, so 0.7.15 is expected to lose it there
+  (fixed in 0.7.16).
+  Why the driver fails, and other Malis, are not known.
 - Browser speed is below 60 in races (finding 087).
 - High-rate handling differs a little from 60 by the race's own chaos, with no trend (finding
   139, after finding 067's limits).

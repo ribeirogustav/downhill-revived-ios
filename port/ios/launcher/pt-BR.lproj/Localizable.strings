@@ -168,7 +168,7 @@
 "Controller Stick Deadzone" = "Zona morta do controle físico";
 
 "Customize Controls" = "Personalizar controles";
-"Arrange and remap touch controls" = "Organizar e remapear controles de toque";
+"Arrange and remap touch controls" = "Editar controles na tela";
 "Drag controls, choose their actions and save a layout for each orientation." = "Arraste os controles, escolha suas ações e salve um layout para cada orientação.";
 "Physical Controllers" = "Controles físicos";
 "Controller button bindings" = "Mapeamento do controle físico";
@@ -218,9 +218,16 @@
 
 "Control options" = "Opções do controle";
 "Drag to move. Rotate the device to edit the other orientation." = "Arraste para mover. Gire o aparelho para editar a outra orientação.";
+"Tap to select. Drag to move. Rotate to change layout." = "Toque para selecionar. Arraste para mover. Gire o aparelho para mudar o layout.";
 
 "Undo" = "Desfazer";
 "Redo" = "Refazer";
 "Collapse tools" = "Recolher ferramentas";
 "Expand tools" = "Expandir ferramentas";
 "Hidden" = "Oculto";
+
+// Individual touch control sizing (25% to 600%).
+"Smaller" = "Diminuir";
+"Larger" = "Aumentar";
+"Reset to 100%" = "Voltar para 100%";
+"Drag controls and set each button's size individually (25% to 600%). Save separate layouts for portrait and landscape." = "Arraste os controles e ajuste individualmente o tamanho de cada botão (25% a 600%). Salve layouts separados para retrato e paisagem.";

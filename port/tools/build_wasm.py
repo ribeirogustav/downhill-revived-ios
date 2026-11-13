@@ -13,7 +13,7 @@ Writes build/wasm/dhd_core.wasm from
 Data symbols are numbers, not linker symbols: wasm-ld has no --defsym, the wasm assembler rejects
 absolute symbols, and an alias needs an anchor as big as the guest space. So each C declaration of
 a data name (D_xxxxxxxx, _gp) becomes a macro for its PS2 address (data.absolute). Design and the
-checks behind it: build/audit/w5-wasm-module.md.
+checks behind it: finding 082 ("W5").
 
 The module's imports are the host_api.h functions only (--allow-undefined-file). Anything else that
 doesn't resolve fails the strict link; a diagnostic link with --allow-undefined then writes the
@@ -83,7 +83,7 @@ if not shutil.which('llvm-nm'):
 if sys.platform == 'darwin':
     os.environ.setdefault('DHD_X86_CLANG', '/usr/bin/clang')
 
-# The module's own memory: above the scratchpad (0x70000000), see build/audit/w5-wasm-module.md 3.
+# The module's own memory: above the scratchpad (0x70000000), see finding 082 ("W5").
 STACK_BASE = 0x70100000
 STACK_SIZE = 1 << 20
 DATA_BASE = STACK_BASE + STACK_SIZE
@@ -97,7 +97,7 @@ MODULE_UNITS = [
     'runtime/sha256.c', 'hle/kernel.c', 'hle/timer.c', 'hle/boot.c', 'hle/sif.c', 'hle/cdvd.c', 'hle/game_data.c',
     'hle/iop.c', 'hle/mc.c', 'hle/dma.c', 'hle/graphics.c', 'hle/pad.c', 'hle/menu_page.c',
     'hle/pc_settings.c', 'hle/widescreen.c', 'hle/exit_menu.c', 'hle/puppet.c', 'hle/online.c',
-    'hle/online_menu.c', 'hle/autopad.c', 'hle/state_trace.c', 'hle/rate_audit.c', 'hle/sound.c', 'hle/game_options.c',
+    'hle/online_menu.c', 'hle/autopad.c', 'hle/state_trace.c', 'hle/rate_audit.c', 'hle/scenery_trace.c', 'hle/sound.c', 'hle/game_options.c',
     'hle/fps.c', 'hle/replay.c', 'hle/keyboard.c', 'hle/vif0.c', 'hle/presence.c', 'hle/touch_field.c',
     'hle/touch_settings.c', 'hle/controls_settings.c', 'runtime/wasi_adapter.c',
 ]
@@ -111,7 +111,8 @@ BASE = ['--target=' + WASM_TARGET, '--sysroot=' + WASI, '-isystem', WASI + '/inc
         '-fno-delete-null-pointer-checks', '-ferror-limit=0', '-w',
         '-Wno-error=incompatible-pointer-types', '-Wno-error=int-conversion',
         '-Wno-error=incompatible-function-pointer-types', '-Wno-error=implicit-function-declaration',
-        '-Wno-error=pointer-arith', '-D_WASI_EMULATED_PROCESS_CLOCKS']
+        '-Wno-error=pointer-arith', '-D_WASI_EMULATED_PROCESS_CLOCKS',
+        '-DSIMDE_FLOAT16_API=1']  # wasi-sdk wasm32-wasip1 lacks _Float16 support; force SIMDE_FLOAT16_API_PORTABLE
 OPT_LANG_C = ['-x', 'c', '-std=gnu89', '-fcommon', '-Wno-return-mismatch']
 OPT_LANG_CPP = ['-x', 'c++', '-std=gnu++98', '-fno-exceptions', '-fno-rtti', '-fno-strict-return']
 ERROR = re.compile(r'^[^\n]*?:(\d+):\d+: (?:fatal )?error: (.*)$', re.M)
@@ -1311,8 +1312,17 @@ def core_inputs_key():
     def git_files(*args):
         out = subprocess.run(['git', 'ls-files', '-z'] + list(args), cwd=ROOT, capture_output=True).stdout
         return [n for n in out.decode('utf-8', 'replace').split('\0') if n]
-    names = {n for n in git_files('--cached') if not n.startswith(NOT_CORE) and not n.endswith('.md')}
+    tracked = git_files('--cached')
+    names = {n for n in tracked if not n.startswith(NOT_CORE) and not n.endswith('.md')}
     names |= {n for n in git_files('--others', '--exclude-standard') if n.startswith(CORE_NEW_FILES)}
+    if not tracked:
+        # Source archives have no Git index. The cache still needs the complete build inputs.
+        for directory in ('src', 'include', 'config', 'tools', 'port'):
+            for path in (Path(ROOT) / directory).rglob('*'):
+                name = path.relative_to(ROOT).as_posix()
+                if (path.is_file() and not name.startswith(NOT_CORE) and
+                        '__pycache__' not in path.parts and path.suffix != '.md'):
+                    names.add(name)
     for d in ('asm', 'assets'):
         for p in glob.glob(os.path.join(ROOT, d, '**', '*'), recursive=True):
             if os.path.isfile(p):

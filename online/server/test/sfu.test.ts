@@ -2,49 +2,67 @@ import { describe, it, expect, vi } from "vitest";
 import { env, runInDurableObject, runDurableObjectAlarm } from "cloudflare:test";
 import { Client, startedRace } from "./helpers";
 import { fakeRealtime, publishedSession } from "./sfu-fake";
-import { Realtime, Turn, TURN_TTL_S } from "../src/sfu";
+import { Realtime, Turn, TURN_TTL_S, clientChannels } from "../src/sfu";
 
 describe("Realtime control plane", () => {
-  it("releases race traffic only after every subscriber acknowledges", async () => {
+  it("releases race traffic only after every subscriber acknowledges this race", async () => {
     const {clients, code} = await startedRace(2);
+    let startAt = 0;
     await runInDurableObject(env.ROOM.get(env.ROOM.idFromName(code)), async (room: any) => {
       const ids = room.state.members.map((m: any) => m.id);
-      for (const member of room.state.members) {
-        member.sfuRace = room.state.race.startAt;
-        member.sfu = {id:`fake-${member.id}`, phase:"ready", channels: ids.filter((id: number) => id !== member.id)
-          .map((id: number, k: number) => ({memberId:id, name:"state", channelId:20 + k, local:false}))};
-      }
+      for (const member of room.state.members) member.sfu = publishedSession(member.id, ids.filter((id: number) => id !== member.id));
+      startAt = room.state.race.startAt;
     });
-    clients[0].sendJson({type:"sfu_ready"});
+    clients[0].sendJson({type:"sfu_ready", race: startAt});
+    // An older race's acknowledgement counts for nothing.
+    clients[1].sendJson({type:"sfu_ready", race: startAt - 60_000});
     await expect(clients[0].next(f => typeof f === "string" && JSON.parse(f).type === "sfu_ready", 50)).rejects.toThrow();
-    clients[1].sendJson({type:"sfu_ready"});
-    await Promise.all(clients.map(c => c.json("sfu_ready")));
+    clients[1].sendJson({type:"sfu_ready", race: startAt});
+    for (const c of clients) expect((await c.json("sfu_ready")).race).toBe(startAt);
     clients[0].sendJson({type:"end"});
     await clients[0].json("ended");
   });
-  it("rejects lobby allocations and caps attempts at one per race", async () => {
+  it("a member's offer makes its session in the room, a new one replaces it, and offers are capped", async () => {
+    const { host, code } = await Client.host();
+    const stub = env.ROOM.get(env.ROOM.idFromName(code));
+    const fake = fakeRealtime();
+    try {
+      await runInDurableObject(stub, async (room: any) => { room.env = { ...room.env, REALTIME_APP_ID: "app", REALTIME_APP_TOKEN: "token" }; });
+      host.sendJson({type:"sfu_offer", sdp:"private"});
+      expect((await host.json("sfu_answer")).sdp).toBe("SFU");
+      let first = "";
+      await runInDurableObject(stub, async (room: any) => {
+        first = room.state.members[0].sfu.id;
+        room.state.members[0].sfu = publishedSession(0, []);  // as if published
+        room.state.members[0].sfu.id = first;
+      });
+      host.sendJson({type:"sfu_offer", sdp:"private"});
+      expect((await host.json("sfu_answer")).sdp).toBe("SFU");
+      await runInDurableObject(stub, async (room: any) => {
+        await room.sfuQueue;
+        expect(room.state.members[0].sfu.id).not.toBe(first);
+        expect(room.state.members[0].sfuAttempt).toBe(2);
+      });
+      // The old session's own channels were closed before the new one.
+      expect(fake.calls.some((c) => c.path.includes(`/sessions/${first}/datachannels/close`))).toBe(true);
+      for (let i = 2; i < 6; i++) { host.sendJson({type:"sfu_offer", sdp:"private"}); await host.json("sfu_answer"); }
+      host.sendJson({type:"sfu_offer", sdp:"private"});
+      expect((await host.json("error")).message).toContain("Too many Realtime sessions");
+    } finally {
+      fake.restore();
+    }
+  });
+  it("an offer that fails ends the member's session and says so (sfu_reset); in a race the racer is out", async () => {
+    // The fake test environment has no app secrets: every API call fails.
     const { host } = await Client.host();
     host.sendJson({type:"sfu_offer", sdp:"private"});
-    expect((await host.json("error")).message).toContain("active race");
-    const {clients, code} = await startedRace(3);
-    // A second offer in the same race is refused (the first one is under way or done).
-    await runInDurableObject(env.ROOM.get(env.ROOM.idFromName(code)), async (room: any) => {
-      room.state.members[1].sfuRace = room.state.race.startAt;
-    });
-    clients[1].sendJson({type:"sfu_offer", sdp:"private"});
-    expect((await clients[1].json("error")).message).toContain("One Realtime session");
-    // Fake test environment has no app secrets: a failed attempt takes the racer out of the race,
-    // so it has no second one either.
+    await host.json("sfu_reset");
+    const {clients} = await startedRace(3);
     clients[0].sendJson({type:"sfu_offer", sdp:"private"});
     expect((await clients[0].json("error")).message).toBe("Realtime connection failed: out of the race.");
-    clients[0].sendJson({type:"sfu_offer", sdp:"private"});
-    expect((await clients[0].json("error")).message).toContain("active race");
-    clients[0].sendJson({type:"end"});
-    await clients[0].json("ended");
-    clients[0].sendJson({type:"sfu_offer", sdp:"private"});
-    expect((await clients[0].json("error")).message).toContain("active race");
-  });
-  it("allocates matching policies and never discloses another player's SDP or addresses", async () => {
+    await clients[0].json("sfu_reset");
+    expect(await clients[1].json("left")).toMatchObject({ slot: 0 });
+  });  it("allocates matching policies and never discloses another player's SDP or addresses", async () => {
     const requests: { path: string; body: any }[] = [];
     let next = 0, channel = 10;
     const fake: typeof fetch = async (input, init) => {
@@ -58,10 +76,12 @@ describe("Realtime control plane", () => {
     };
     const api = new Realtime({ REALTIME_APP_ID: "test-app", REALTIME_APP_TOKEN: "fake" }, fake);
     const a = await api.open("PRIVATE-PLAYER-A"), b = await api.open("PRIVATE-PLAYER-B");
-    const messagesA = [a.message, { type: "sfu_channels", channels: await api.publish(1, a.session) }];
-    const messagesB = [b.message, { type: "sfu_channels", channels: await api.publish(2, b.session) }];
-    messagesA.push({ type: "sfu_channels", channels: await api.subscribe(a.session, 2, b.session) });
-    messagesB.push({ type: "sfu_channels", channels: await api.subscribe(b.session, 1, a.session) });
+    const messagesA = [a.message, { type: "sfu_channels", channels: clientChannels(await api.publish(1, a.session)) }];
+    const messagesB = [b.message, { type: "sfu_channels", channels: clientChannels(await api.publish(2, b.session)) }];
+    messagesA.push({ type: "sfu_channels", channels: clientChannels(await api.subscribe(a.session, 2, b.session)) });
+    messagesB.push({ type: "sfu_channels", channels: clientChannels(await api.subscribe(b.session, 1, a.session)) });
+    // The room keeps which session each subscription leads to (finding 177); clients never see it.
+    expect(a.session.channels.filter(c => !c.local).map(c => c.session)).toEqual(["session-2", "session-2"]);
     for (const messages of [messagesA, messagesB]) {
       const wire = JSON.stringify(messages);
       expect(wire).not.toMatch(/PRIVATE|address|sessionId|session-/);
@@ -116,7 +136,6 @@ describe("Realtime setup while the race's members change", () => {
         a.sfu = publishedSession(a.id, [b.id]);
         b.sfu = publishedSession(b.id, [a.id]);
         c.sfu = { id: `session-${c.id}`, phase: "connect", channels: [] };
-        for (const m of room.state.members) m.sfuRace = room.state.race.startAt;
       });
       // Member 2 (slot 2) connects; its first subscription is to member 0's publication.
       clients[2].sendJson({ type: "sfu_connected" });
@@ -126,17 +145,12 @@ describe("Realtime setup while the race's members change", () => {
       await clients[1].json("left");
       fake.release();
       // Members 1 and 2 subscribe to each other, so both can acknowledge and be released.
-      const got1 = await clients[1].next((f) => typeof f === "string" && JSON.parse(f).type === "sfu_channels" &&
-        JSON.parse(f).channels.some((c: any) => c.memberId === 2));
-      expect(JSON.parse(got1 as string).channels.every((c: any) => !c.local)).toBe(true);
-      await clients[2].next((f) => typeof f === "string" && JSON.parse(f).type === "sfu_channels" &&
-        JSON.parse(f).channels.some((c: any) => c.memberId === 1));
       await runInDurableObject(stub, async (room: any) => {
+        for (let i = 0; i < 200 && room.subscribing; i++) await new Promise((r) => setTimeout(r, 10));
         await room.sfuQueue;
         const [b, c] = room.state.members;
         expect(b.sfu.channels.some((x: any) => !x.local && x.memberId === c.id)).toBe(true);
         expect(c.sfu.channels.some((x: any) => !x.local && x.memberId === b.id)).toBe(true);
-        expect(room.state.members.every((m: any) => m.sfu.channels.every((x: any) => x.memberId !== 0))).toBe(true);
       });
       clients[1].sendJson({ type: "sfu_ready" });
       clients[2].sendJson({ type: "sfu_ready" });
@@ -156,13 +170,12 @@ describe("A racer whose Realtime setup fails or never ends", () => {
       a.sfu = publishedSession(a.id, [b.id]);
       b.sfu = publishedSession(b.id, [a.id]);
       c.sfu = { id: `session-${c.id}`, phase: "connect", channels: [] };
-      for (const m of room.state.members) m.sfuRace = room.state.race.startAt;
-      a.sfuReady = b.sfuReady = true;
+      a.sfuReadyRace = b.sfuReadyRace = room.state.race.startAt;
       extra(room);
     });
   }
 
-  it("takes a racer whose publication fails out of the race and releases the others", async () => {
+  it("takes a racer whose publication fails out of the race, ends its session and releases the others", async () => {
     const { clients, code } = await startedRace(3);
     const stub = env.ROOM.get(env.ROOM.idFromName(code));
     const fake = fakeRealtime();
@@ -171,6 +184,7 @@ describe("A racer whose Realtime setup fails or never ends", () => {
       await twoReady(stub);
       clients[2].sendJson({ type: "sfu_connected" });
       expect((await clients[2].json("error")).message).toBe("Realtime connection failed: out of the race.");
+      await clients[2].json("sfu_reset");
       for (const c of clients.slice(0, 2)) {
         expect(await c.json("left")).toMatchObject({ slot: 2, memberId: 2 });
         await c.json("sfu_ready");
@@ -179,12 +193,10 @@ describe("A racer whose Realtime setup fails or never ends", () => {
         await room.sfuQueue;
         expect(room.state.race.left).toEqual([2]);
         expect(room.state.race.sfuReleased).toBe(true);
-        // Still in the room, not in the race, its session closed.
+        // Still in the room, not in the race, its session closed (its game offers a new one).
         expect(room.state.members.map((m: any) => m.id)).toEqual([0, 1, 2]);
         expect(room.state.members[2].sfu).toBeUndefined();
       });
-      clients[2].sendJson({ type: "sfu_connected" });
-      expect((await clients[2].json("error")).message).toContain("active race");
     } finally {
       fake.restore();
     }
@@ -194,8 +206,10 @@ describe("A racer whose Realtime setup fails or never ends", () => {
     const { clients, code } = await startedRace(3);
     const stub = env.ROOM.get(env.ROOM.idFromName(code));
     const fake = fakeRealtime();
-    // Member 1's session refuses the subscription to member 2's publication.
+    // Member 1's session refuses the subscription to member 2's publication: a definite refusal
+    // (a 4xx; a 5xx or no answer is an unknown outcome, finding 182).
     fake.fail = (path) => path.includes("/sessions/session-1/datachannels/new");
+    fake.failStatus = 400;
     try {
       await twoReady(stub);
       clients[2].sendJson({ type: "sfu_connected" });
@@ -205,6 +219,53 @@ describe("A racer whose Realtime setup fails or never ends", () => {
       // Members 0 and 2 have each other; their acknowledgements release them.
       clients[2].sendJson({ type: "sfu_ready" });
       await Promise.all([clients[0].json("sfu_ready"), clients[2].json("sfu_ready")]);
+    } finally {
+      fake.restore();
+    }
+  });
+
+  it("takes only the racer whose connection never comes up out, keeping its session; the others then release (real games)", async () => {
+    // As real games do: a game says sfu_ready only once it has every racer's channels, so members
+    // 0 and 1, connected and subscribed to each other, wait for member 2, whose UDP and TURN both
+    // failed. 0.7.12 took all three out at SFU_SETUP_MS; only member 2 goes now, at SFU_CONNECT_MS.
+    const { clients, code } = await startedRace(3);
+    const stub = env.ROOM.get(env.ROOM.idFromName(code));
+    const fake = fakeRealtime();
+    try {
+      await twoReady(stub, (room) => {
+        const [a, b] = room.state.members;
+        delete a.sfuReadyRace; delete b.sfuReadyRace;
+        room.state.race.sfuConnectBy = Date.now() - 1;
+      });
+      expect(await runDurableObjectAlarm(stub)).toBe(true);
+      expect((await clients[2].json("error")).message).toBe("Realtime connection failed: out of the race.");
+      for (const c of clients.slice(0, 2)) expect(await c.json("left")).toMatchObject({ slot: 2, memberId: 2 });
+      // Their games stop expecting member 2's channels (port/render/net/src/sfu.rs `left`) and say ready.
+      clients[0].sendJson({ type: "sfu_ready" });
+      clients[1].sendJson({ type: "sfu_ready" });
+      await Promise.all([clients[0].json("sfu_ready"), clients[1].json("sfu_ready")]);
+      await runInDurableObject(stub, async (room: any) => {
+        expect(room.state.race.slots.length).toBe(3);
+        expect(room.state.race.left).toEqual([2]);
+        // Still connecting: kept for the next race (finding 177).
+        expect(room.state.members[2].sfu.id).toBe("session-2");
+      });
+    } finally {
+      fake.restore();
+    }
+  });
+
+  it("keeps a racer whose sfu_connected came in time though its publication is still queued", async () => {
+    const { code } = await startedRace(3);
+    const stub = env.ROOM.get(env.ROOM.idFromName(code));
+    const fake = fakeRealtime();
+    try {
+      await twoReady(stub, (room) => {
+        room.state.members[2].sfuConnected = true;
+        room.state.race.sfuConnectBy = Date.now() - 1;
+      });
+      expect(await runDurableObjectAlarm(stub)).toBe(true);
+      await runInDurableObject(stub, async (room: any) => expect(room.state.race.left).toEqual([]));
     } finally {
       fake.restore();
     }
@@ -223,7 +284,6 @@ describe("A racer whose Realtime setup fails or never ends", () => {
       // Member 2 never sends its offer.
       await twoReady(stub, (room) => {
         delete room.state.members[2].sfu;
-        delete room.state.members[2].sfuRace;
         room.state.race.sfuBy = Date.now() - 1;
       });
       expect(await runDurableObjectAlarm(stub)).toBe(true);
@@ -245,15 +305,12 @@ describe("A racer whose Realtime setup fails or never ends", () => {
 });
 
 describe("Cleanup that fails", () => {
-  /** Every racer published and subscribed to every other; member 0 also has TURN credentials. */
+  /** Every racer published and subscribed to every other; member 2 also has TURN credentials. */
   async function allPublished(stub: DurableObjectStub) {
     await runInDurableObject(stub, async (room: any) => {
       room.env = { ...room.env, REALTIME_APP_ID: "app", REALTIME_APP_TOKEN: "token", TURN_KEY_ID: "key", TURN_KEY_API_TOKEN: "token" };
       const ids = room.state.members.map((m: any) => m.id);
-      for (const m of room.state.members) {
-        m.sfu = publishedSession(m.id, ids.filter((id: number) => id !== m.id));
-        m.sfuRace = room.state.race.startAt;
-      }
+      for (const m of room.state.members) m.sfu = publishedSession(m.id, ids.filter((id: number) => id !== m.id));
       room.state.members[2].turnUser = "u2";
       room.state.members[2].turnUntil = Date.now() + 3_600_000;
     });
@@ -304,7 +361,7 @@ describe("Cleanup that fails", () => {
     }
   });
 
-  it("closes every racer at the race's end past one failure, and keeps what failed after the room ends", async () => {
+  it("keeps every session at the race's end; when everyone leaves each closes past one failure, and what failed outlives the room", async () => {
     const { clients, code } = await startedRace(3);
     const stub = env.ROOM.get(env.ROOM.idFromName(code));
     const fake = fakeRealtime();
@@ -316,23 +373,25 @@ describe("Cleanup that fails", () => {
       await Promise.all(clients.map((c) => c.json("ended")));
       await runInDurableObject(stub, async (room: any) => {
         await room.sfuQueue;
-        expect(room.state.members.every((m: any) => m.sfu === undefined && m.turnUser === undefined)).toBe(true);
-        expect(room.cleanup.map((x: any) => x.session)).toEqual(["session-0"]);
+        expect(room.state.members.map((m: any) => m.sfu?.id)).toEqual(["session-0", "session-1", "session-2"]);
+        expect(room.state.members[2].turnUser).toBe("u2");
       });
-      const closes = fake.calls.filter((c) => c.path.endsWith("datachannels/close")).map((c) => c.path.split("/").at(-3));
-      expect(new Set(closes)).toEqual(new Set(["session-0", "session-1", "session-2"]));
-      expect(fake.calls.some((c) => c.path.endsWith("credentials/u2/revoke"))).toBe(true);
+      expect(fake.calls.filter((c) => c.path.endsWith("datachannels/close") || c.path.endsWith("/revoke"))).toEqual([]);
       // Everyone leaves: the room ends, its cleanup stays with an alarm.
       for (const c of clients) c.sendJson({ type: "leave" });
       for (const c of clients) await c.closed();
       await runInDurableObject(stub, async (room: any) => {
         await room.sfuQueue;
         expect(room.state).toBeNull();
+        expect(room.cleanup.map((x: any) => x.session)).toEqual(["session-0"]);
         expect((await room.ctx.storage.get("cleanup")).length).toBe(1);
         expect(await room.ctx.storage.getAlarm()).not.toBeNull();
         // Its time is up: dropped without another call.
         room.cleanup[0].until = 0;
       });
+      const closes = fake.calls.filter((c) => c.path.endsWith("datachannels/close")).map((c) => c.path.split("/").at(-3));
+      expect(new Set(closes)).toEqual(new Set(["session-0", "session-1", "session-2"]));
+      expect(fake.calls.some((c) => c.path.endsWith("credentials/u2/revoke"))).toBe(true);
       const before = fake.calls.length;
       await runDurableObjectAlarm(stub);
       expect(fake.calls.length).toBe(before);
@@ -373,7 +432,7 @@ describe("TURN over TLS fallback", () => {
       .rejects.toThrow("Invalid TURN");
   });
 
-  it("gives credentials only to the racer that asks, once per race, and revokes them at the end", async () => {
+  it("gives credentials only to the member that asks, once per session, kept across races, revoked when it leaves", async () => {
     const { clients, code } = await startedRace(2);
     const stub = env.ROOM.get(env.ROOM.idFromName(code));
     const calls: string[] = [];
@@ -384,25 +443,28 @@ describe("TURN over TLS fallback", () => {
     try {
       await runInDurableObject(stub, async (room: any) => {
         room.env = { ...room.env, TURN_KEY_ID: "key", TURN_KEY_API_TOKEN: "token" };
-        for (const member of room.state.members) {
-          member.sfuRace = room.state.race.startAt;
-          member.sfu = { id: `fake-${member.id}`, phase: "connect", channels: [] };
-        }
+        for (const member of room.state.members) { member.sfu = { id: `fake-${member.id}`, phase: "connect", channels: [] }; member.sfuAttempt = 1; }
       });
-      clients[0].sendJson({ type: "sfu_turn" });
-      const got = await clients[0].json("sfu_turn");
+      clients[1].sendJson({ type: "sfu_turn" });
+      const got = await clients[1].json("sfu_turn");
       expect(got.credential).toBe("c".repeat(64));
-      clients[0].sendJson({ type: "sfu_turn" });
-      expect((await clients[0].json("error")).message).toContain("One TURN credential per race");
+      clients[1].sendJson({ type: "sfu_turn" });
+      expect((await clients[1].json("error")).message).toContain("One TURN credential per session");
       expect(calls.filter(c => c.endsWith("generate-ice-servers"))).toHaveLength(1);
       // The other racer hears nothing of it.
-      await expect(clients[1].next(f => typeof f === "string" && /sfu_turn|ccccccc|uuuuuuu/.test(f), 200)).rejects.toThrow();
+      await expect(clients[0].next(f => typeof f === "string" && /sfu_turn|ccccccc|uuuuuuu/.test(f), 200)).rejects.toThrow();
       clients[0].sendJson({ type: "end" });
       await Promise.all(clients.map(c => c.json("ended")));
       await runInDurableObject(stub, async (room: any) => {
         await room.sfuQueue;
-        expect(room.state.members.every((m: any) => m.turnUser === undefined)).toBe(true);
+        expect(room.state.members[1].turnUser).toBe("u".repeat(64));
       });
+      expect(calls.filter(c => c.endsWith("/revoke"))).toHaveLength(0);
+      clients[1].sendJson({ type: "leave" });
+      await clients[0].json("room");
+      await runInDurableObject(stub, async (room: any) => { await room.sfuQueue; });
+      // The revoke goes through the room's call gate (finding 182), so it may land just after.
+      for (let i = 0; i < 100 && !calls.some(c => c.endsWith("/revoke")); i++) await new Promise(r => setTimeout(r, 10));
       expect(calls.filter(c => c.endsWith(`/credentials/${"u".repeat(64)}/revoke`))).toHaveLength(1);
     } finally {
       spy.mockRestore();
@@ -413,12 +475,11 @@ describe("TURN over TLS fallback", () => {
     const { clients, code } = await startedRace(2);
     const stub = env.ROOM.get(env.ROOM.idFromName(code));
     await runInDurableObject(stub, async (room: any) => {
-      const me = room.state.members[0];
-      me.sfuRace = room.state.race.startAt;
-      me.sfu = { id: "fake", phase: "connect", channels: [] };
+      room.state.members[0].sfu = { id: "fake", phase: "connect", channels: [] };
     });
     // Member 0's client asks (the other one, without a session, gets an error).
     for (const c of clients) c.sendJson({ type: "sfu_turn" });
+    expect((await clients[1].json("error")).message).toContain("TURN requires a Realtime session");
     await runInDurableObject(stub, async (room: any) => {
       await room.sfuQueue;
       expect(room.state.members[0].sfu.phase).toBe("connect");
@@ -426,12 +487,119 @@ describe("TURN over TLS fallback", () => {
     });
   });
 
-  it("refuses TURN outside a race or before the racer's SFU session", async () => {
+  it("refuses TURN without a session, in the room or in a race", async () => {
     const { host } = await Client.host();
     host.sendJson({ type: "sfu_turn" });
-    expect((await host.json("error")).message).toContain("active race");
+    expect((await host.json("error")).message).toContain("TURN requires a Realtime session");
     const { clients } = await startedRace(2);
     clients[0].sendJson({ type: "sfu_turn" });
-    expect((await clients[0].json("error")).message).toContain("Realtime connection failed");
+    expect((await clients[0].json("error")).message).toContain("TURN requires a Realtime session");
+  });
+});
+
+describe("late failures of replaced Realtime sessions", () => {
+  for (const kind of ["sfu_offer", "sfu_connected"]) {
+    it(`${kind}: an old API failure cannot fail the replacement`, async () => {
+      const { host, code } = await Client.host();
+      const fake = fakeRealtime();
+      const suffix = kind === "sfu_offer" ? "sessions/new" : "datachannels/new";
+      fake.hold = path => path.endsWith(suffix);
+      fake.fail = path => path.endsWith(suffix);
+      try {
+        await runInDurableObject(env.ROOM.get(env.ROOM.idFromName(code)), async (room: any) => {
+          room.env = { ...room.env, REALTIME_APP_ID: "app", REALTIME_APP_TOKEN: "token" };
+          const me = room.state.members[0], ws = room.sockets.get(me.id);
+          me.sfuAttempt = 1;
+          if (kind === "sfu_connected") me.sfu = { id: "old-session", phase: "connect", channels: [] };
+          const pending = room.onSfu(ws, me, { type: kind, sdp: "offer" });
+          for (let i = 0; i < 200 && !fake.held; i++) await new Promise(r => setTimeout(r, 5));
+          expect(fake.held).toBe(1);
+          // A newer offer completed while the earlier API call was in flight.
+          me.sfuAttempt++;
+          const replacement = publishedSession(me.id, []);
+          replacement.id = "replacement";
+          me.sfu = replacement;
+          fake.release();
+          expect(await pending).toBe(false);
+          expect(me.sfu).toBe(replacement);
+          expect(me.sfu.phase).toBe("ready");
+        });
+      } finally { fake.release(); fake.restore(); }
+    });
+  }
+  it("an old subscription failure cannot retire the replacement subscriber", async () => {
+    const { clients, code } = await startedRace(2);
+    const fake = fakeRealtime();
+    fake.hold = (path, body) => path.endsWith("datachannels/new") && body.dataChannels[0].sessionId === "session-1";
+    fake.fail = fake.hold;
+    try {
+      await runInDurableObject(env.ROOM.get(env.ROOM.idFromName(code)), async (room: any) => {
+        room.env = { ...room.env, REALTIME_APP_ID: "app", REALTIME_APP_TOKEN: "token" };
+        const [a, b] = room.state.members;
+        a.sfu = publishedSession(a.id, []);
+        b.sfu = publishedSession(b.id, [a.id]);
+        const pending = room.subscribeGroup(new Realtime(room.env), false);
+        for (let i = 0; i < 200 && !fake.held; i++) await new Promise(r => setTimeout(r, 5));
+        expect(fake.held).toBe(1);
+        a.sfu = publishedSession(a.id, [b.id]);
+        a.sfu.id = "replacement";
+        fake.release();
+        expect(await pending).toEqual([]);
+        expect(a.sfu.phase).toBe("ready");
+      });
+    } finally { fake.release(); fake.restore(); }
+  });
+});
+
+
+describe("publication admission", () => {
+  it("duplicate connected messages publish only once while the first API call waits", async () => {
+    const { code } = await Client.host();
+    const fake = fakeRealtime();
+    fake.hold = path => path.endsWith("datachannels/new");
+    try {
+      await runInDurableObject(env.ROOM.get(env.ROOM.idFromName(code)), async (room: any) => {
+        room.env = { ...room.env, REALTIME_APP_ID: "app", REALTIME_APP_TOKEN: "token" };
+        const me = room.state.members[0], ws = room.sockets.get(me.id);
+        me.sfu = { id: "pending-publication", phase: "connect", channels: [] };
+        const first = room.onSfu(ws, me, { type: "sfu_connected" });
+        for (let i = 0; i < 200 && !fake.held; i++) await new Promise(r => setTimeout(r, 5));
+        expect(fake.held).toBe(1);
+        const duplicate = room.onSfu(ws, me, { type: "sfu_connected" });
+        await new Promise(r => setTimeout(r, 20));
+        fake.release();
+        expect(await first).toBe(false);
+        expect(await duplicate).toBe(false);
+        expect(fake.calls.filter(c => c.path.endsWith("datachannels/new"))).toHaveLength(1);
+        expect(me.sfu.channels).toHaveLength(2);
+      });
+    } finally { fake.release(); fake.restore(); }
+  });
+});
+
+
+describe("TURN generation ownership", () => {
+  it("a late mint revokes only its own credential and preserves the replacement's", async () => {
+    const { code } = await Client.host();
+    const fake = fakeRealtime();
+    fake.hold = path => path.endsWith("generate-ice-servers");
+    try {
+      await runInDurableObject(env.ROOM.get(env.ROOM.idFromName(code)), async (room: any) => {
+        room.env = { ...room.env, TURN_KEY_ID: "key", TURN_KEY_API_TOKEN: "token" };
+        const me = room.state.members[0], ws = room.sockets.get(me.id);
+        me.sfuAttempt = 1;
+        me.sfu = publishedSession(me.id, []);
+        const pending = room.onSfu(ws, me, { type: "sfu_turn" });
+        for (let i = 0; i < 200 && !fake.held; i++) await new Promise(r => setTimeout(r, 5));
+        expect(fake.held).toBe(1);
+        me.sfuAttempt = 2;
+        me.turnUser = "replacement-credential";
+        me.turnUntil = Date.now() + 3600000;
+        fake.release();
+        expect(await pending).toBe(false);
+        expect(me.turnUser).toBe("replacement-credential");
+        expect(fake.calls.filter(c => c.path.endsWith("/revoke")).map(c => c.path.split("/").at(-2))).toEqual(["u".repeat(32)]);
+      });
+    } finally { fake.release(); fake.restore(); }
   });
 });

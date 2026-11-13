@@ -11,6 +11,7 @@
 #include "stick.h"
 #include "controls_table.h"  /* the bindings' tables (port/render/settings, finding 157) */
 #include "../gs/button_icons.h"
+#include "../gs/gs_mesh.h"   /* gs_mesh_setting_read: Native VU (finding 194) */
 #include "../include/version.h"
 #include "../runtime/sha256.h"
 
@@ -1176,6 +1177,7 @@ void host_settings_load(void)
         at += n + (at[n] == ',');
     }
     hle_log("settings:%s\n", *settings_seen ? settings_seen : " (none)");
+    gs_mesh_setting_read();   /* Native VU for the VU thread (vu1_mesh.inc), before its first run */
     /* The install id for the online hello (finding 161; port/net/net.c): made once and kept in
        dhd.ini. Set straight into the environment, never through settings_set: dhd.log, which
        players post, must not show it (whoever copied it could get its player banned). */
@@ -1403,18 +1405,22 @@ int host_service_controls_change(int device, int edit, int target, int slot, int
 }
 
 /* What is held for a wait: the bindable keys and Esc, and each input of a controller (a trigger
-   past half way) as a bit of its id; one player's controller (1 or 2), or every one (0). */
+   past half way) as a bit of its place through `layout`'s shoulder swaps (the layout the wait
+   binds for, so the input it gets reads back as the button pressed; finding 189); one player's
+   controller (1 or 2), or every one (0). */
 static int controls_key_held(int vk) { return keyboard_focused() && keyboard_position_down((unsigned)vk); }
 
-static uint32_t pad_held(int player)
+static uint32_t pad_held(int player, const ControlsLayout *layout)
 {
     uint32_t held = 0;
     for (int p = player ? player - 1 : 0; p < (player ? player : 4); p++) {
         GamepadRaw raw;
         if (!gamepad_start() || !gamepad_raw(p, &raw)) continue;
-        held |= raw.buttons;
+        uint32_t inputs = raw.buttons;
         for (int i = 0; i < CONTROL_PAD_INPUTS; i++)
-            if (control_pad_inputs[i].trigger && raw.trigger[control_pad_inputs[i].trigger - 1] > 128) held |= 1u << control_pad_inputs[i].id;
+            if (control_pad_inputs[i].trigger && raw.trigger[control_pad_inputs[i].trigger - 1] > 128) inputs |= 1u << control_pad_inputs[i].id;
+        for (int id = 1; id < 32; id++)
+            if (inputs & 1u << id) held |= 1u << gamepad_place(layout, id);
     }
     return held;
 }
@@ -1433,9 +1439,10 @@ int host_service_controls_capture(int device, int command)
     static uint8_t keys_before[256];
     static uint32_t pads_before;
     int player = device == CONTROL_PAD1 ? 1 : device == CONTROL_PAD2 ? 2 : 0;
+    const ControlsLayout *layout = player ? controls_layout(device) : &control_defaults[CONTROL_PAD1];
     if (player && !host_service_controls_pad(player)) player = 0;  /* that player's pad isn't there: any */
     if (command == 2) {
-        if (pad_held(0) || controls_key_held(0x1B)) return 1;
+        if (pad_held(0, layout) || controls_key_held(0x1B)) return 1;
         for (int i = 0; i < CONTROL_KEYS; i++)
             if (controls_key_held(control_keys[i].vk)) return 1;
         return 0;
@@ -1444,7 +1451,7 @@ int host_service_controls_capture(int device, int command)
         memset(keys_before, 0, sizeof keys_before);
         keys_before[0x1B] = (uint8_t)controls_key_held(0x1B);
         for (int i = 0; i < CONTROL_KEYS; i++) keys_before[control_keys[i].vk] = (uint8_t)controls_key_held(control_keys[i].vk);
-        pads_before = pad_held(0);
+        pads_before = pad_held(0, layout);
         return 0;
     }
     /* a key held at the beginning counts once it was let go */
@@ -1457,7 +1464,7 @@ int host_service_controls_capture(int device, int command)
         if (!down) keys_before[vk] = 0;
         else if (!keys_before[vk] && !pressed) pressed = vk;
     }
-    uint32_t held = pad_held(0), mine = pad_held(player);
+    uint32_t held = pad_held(0, layout), mine = pad_held(player, layout);
     pads_before &= held;
     uint32_t fresh = mine & ~pads_before;
     if (device == CONTROL_KEYBOARD) return pressed && !system_keys_held() ? pressed : -1;

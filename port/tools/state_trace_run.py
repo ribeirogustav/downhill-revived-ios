@@ -14,7 +14,7 @@ under build/. The game runs headless (DHD_HEADLESS=1, no window) and ends itself
 field (DHD_STATE_STOP); if it hasn't ended after --timeout seconds it is stopped, with whatever it
 started (owned_process), and the run fails.
 
-The recipe (build/audit/h4-state-trace.md, section 7): the virtual clock (DHD_FRAME_CLOCK=1),
+The recipe (finding 081, "The proof: state traces"): the virtual clock (DHD_FRAME_CLOCK=1),
 no movies, no memory card, no sound device, native renderer, default settings only
 (DHD_SETTINGS=none), a pinned race seed, and field- or race-clock-keyed pad scripts. The race
 scenario needs DHD_RACE_SYNC=1 for its race-clock pad (the same route bench_race.py uses); that starts a 30 s heartbeat thread that only reads and prints."""
@@ -70,9 +70,10 @@ OPTIONS_NAV = '0:triangle|cross,15:down,15:down,15:cross'
 
 
 def track_nav(index):
-    """RACE_NAV with the track selector moved down `index` unlocked rows first."""
+    """RACE_NAV with the track chooser moved right `index` unlocked tracks first (down does not move
+    it: until finding 193 every raceN scenario raced Mt. Midoule FR)."""
     prefix, suffix = RACE_NAV.split('18@4C7F38=1:cross', 1)
-    return prefix + '18@4C7F38=1+240:down,' * index + '18@4C7F38=1+240:cross' + suffix
+    return prefix + '18@4C7F38=1+240:right,' * index + '18@4C7F38=1+240:cross' + suffix
 
 
 # name -> (DHD_NAV script, extra env, default fields, what it covers).

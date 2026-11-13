@@ -68,7 +68,11 @@ int main(void) {
         source = source[:a] + 'static void trigger_haptic(bool heavy) { (void)heavy; }\n' + source[b:]
         gamepad = (ROOT/'port/hle/gamepad.c').read_text()
         pressure = gamepad[gamepad.index('static const uint16_t pressure_order'):gamepad.index('static uint8_t trigger_byte')]
-        mapping = gamepad[gamepad.index('static int input_value('):gamepad.index('/* What its buttons say:')]
+        gamepad_input_ids = gamepad[gamepad.index('static int input_id('):gamepad.index('static int input_id(')+gamepad[gamepad.index('static int input_id('):].index('\n}')+3] + '\n'
+        mapping = gamepad[gamepad.index('int gamepad_place('):gamepad.index('/* What its buttons say:')]
+        # Exercise the iOS-specific analog filter without importing the Apple SDK on Linux.
+        mapping = re.sub(r'#if defined\(__APPLE__\)\n#include <TargetConditionals.h>\n#endif\n', '', mapping)
+        mapping = mapping.replace('defined(__APPLE__) && TARGET_OS_IPHONE', '1')
         keyboard = (ROOT/'port/hle/keyboard.c').read_text()
         decode = keyboard[keyboard.index('int keyboard_game_axis('):keyboard.index('/* The raw byte for a fraction')]
         raw_header = (ROOT/'port/hle/hle.h').read_text()
@@ -88,7 +92,7 @@ void host_putenv_s(const char *name, const char *value) {
   snprintf(!strcmp(name,"DHD_PAD1") ? pad1_value : pad2_value,512,"%s",value); layout_writes++;
  } else { applied_deadzone = atoi(value); deadzone_writes++; }
 }
-''' + source + raw_type + '\nenum { PRESSED = 30 };\n' + '\n#include \"controls_table.h\"\n' + pressure + mapping + decode + r'''
+''' + source + raw_type + '\nenum { PRESSED = 30 };\n' + '\n#include \"controls_table.h\"\n' + gamepad_input_ids + pressure + mapping + decode + r'''
 #include <assert.h>
 static HostPad poll(void) {
  HostPad p={0}; p.left_x=p.left_y=p.right_x=p.right_y=128; touch_pad_merge(&p); return p;
@@ -109,6 +113,33 @@ int main(void) {
  touch_input_end(1,145,720);
  touch_input_begin(2,160,720); p=poll(); assert(p.left_x>=178 && p.left_x<200);
  touch_input_cancel(2); assert(poll().left_x==128); s_config.stick_deadzone=.05f;
+ /* Both native touch routes keep small off-axis motion neutral. */
+ touch_input_begin(3,140,720);
+ touch_input_move(3,198,738); p=poll(); assert(p.left_x>200 && p.left_y==128);
+ touch_input_cancel(3); assert(poll().left_x==128 && poll().left_y==128);
+ s_config.stick_floating=true;
+ touch_input_begin(4,200,650);
+ touch_input_move(4,142,632); p=poll(); assert(p.left_x<50 && p.left_y==128);
+ touch_input_end(4,142,632); assert(poll().left_x==128 && poll().left_y==128);
+ s_config.stick_floating=false;
+
+ /* SwiftUI supplies normalized deltas here. Keep all deliberate diagonals. */
+ for (int horizontal=-1; horizontal<=1; horizontal+=2) {
+  for (int vertical=-1; vertical<=1; vertical+=2) {
+   touch_input_set_stick(.90f*horizontal,.30f*vertical);
+   p=poll(); assert((horizontal<0 ? p.left_x<50 : p.left_x>200) && p.left_y==128);
+   float visual_x, visual_y;
+   touch_input_get_stick(&visual_x,&visual_y);
+   assert(visual_x*horizontal>.8f && visual_y==0);
+   touch_input_set_stick(.30f*horizontal,.90f*vertical);
+   p=poll(); assert(p.left_x==128 && (vertical<0 ? p.left_y<50 : p.left_y>200));
+   touch_input_set_stick(.90f*horizontal,.90f*vertical);
+   p=poll();
+   assert(horizontal<0 ? p.left_x<50 : p.left_x>200);
+   assert(vertical<0 ? p.left_y<50 : p.left_y>200);
+  }
+ }
+ touch_input_set_stick(0,0); assert(poll().left_x==128 && poll().left_y==128);
  touch_input_set_button(TOUCH_CTRL_CROSS,true);
  p=poll(); assert(p.buttons==PAD_CROSS && p.pressure[6]==255);
  p=poll(); assert(p.buttons==PAD_CROSS);
@@ -231,6 +262,10 @@ int main(void) {
  uint32_t *x=(uint32_t*)(uintptr_t)(PS2_RAM_BASE+0x27ECC0);
  uint32_t *y=(uint32_t*)(uintptr_t)(PS2_RAM_BASE+0x27ECE0);
  *x=0x438A8000; *y=0x3F15551D;
+ for (unsigned i=0;i<sizeof ws_sprite_widths/sizeof *ws_sprite_widths;i++) {
+  uint32_t *at=(uint32_t*)(uintptr_t)(PS2_RAM_BASE+ws_sprite_widths[i].ee);
+  at[0]=ws_sprite_widths[i].retail; at[1]=ws_sprite_widths[i].upper;
+ }
  setenv("DHD_IOS_DISPLAY_AUTO","1",1);
  host_widescreen_init(); assert(fabs(host_widescreen_aspect()-16.0/9)<1e-6);
  assert(*x==float_bits(bits_float(0x438A8000)*.75f));
@@ -238,10 +273,6 @@ int main(void) {
  D_0075A9D0[0]=(WsEntry){&view,&view,5,{0}};
  D_0075A9D0[1]=(WsEntry){&view,&view,5,{0}};
  current_y[0]=current_y[1]=.5f/.75f;
- for (unsigned i=0;i<sizeof ws_sprite_widths/sizeof *ws_sprite_widths;i++) {
-  uint32_t *at=(uint32_t*)(uintptr_t)(PS2_RAM_BASE+ws_sprite_widths[i].ee);
-  at[0]=float_bits(277*.75f); at[1]=ws_sprite_widths[i].upper;
- }
  for(int i=0;i<1000;i++) {
   output=21.0/9;host_widescreen_vsync();assert(fabs(host_widescreen_aspect()-output)<1e-6);
   assert(fabs(view.x0-688*port_fov_x)<.02);

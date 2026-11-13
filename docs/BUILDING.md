@@ -160,10 +160,25 @@ Measured per platform and step in finding 151. What keeps a rebuild short:
   (`objcache.tool_output`).
 - Android compiles with half the machine's threads by default (chunks are small; wasm2c's own parts
   needed 2). With `--pgo-use`, the profile is part of every object's key, so a second build with the
-  same profile and core is all hits. A profile stays useful across core changes: clang applies a
-  function's counts only while the function is unchanged (its control-flow hash), so the changed
-  functions build as without PGO and the rest keep theirs. Record a new one when the hot code (EE,
-  VU, GS) changed, and at least once per release (finding 146).
+  same profile and core is all hits.
+- **The Android profile** (`build_apk.py --pgo-use PROFDATA`, `package_release.py --pgo-use`,
+  findings 146, 195). A function is found in a profile by its name, a static one by its unit's file
+  name and its name: `build_host64.py` passes `-static-func-full-module-prefix=false` when it
+  records and when it uses a profile, so one recorded in any checkout serves a build made in any
+  other (before finding 195 the key held the recording build's path, and no other build found its
+  static functions: the VU1 kernels, the GS recording, the graphics queue, the module's helpers).
+  `build_host64.py` refuses a profile with paths in its keys. clang applies a function's counts
+  only while the function is unchanged (its control-flow hash): a changed function builds as
+  without a profile, silently, and the rest keep theirs. So record a new one when the hot code
+  (EE, VU, GS) changed, and at least once per release:
+
+      python port/android/build_apk.py --release --pgo-generate   # refused as a release, as it must be:
+      adb install -r build/android/project/app/build/outputs/apk/release/app-release.apk
+      # run races (finding 195: finding 156's route twice, Native VU off and on); at its exit the
+      # game writes files/dhd-<pid>.profraw in the app's folder (read it by root, or build debuggable
+      # and use run-as)
+      llvm-profdata merge -o dhd.profdata dhd-*.profraw            # the NDK's llvm-profdata
+      python port/tools/package_release.py --platform android --pgo-use dhd.profdata
 
 ### Android (arm64 APK)
 
@@ -364,8 +379,9 @@ asset URL, the zip's SHA-256 and size) for the updater; publish both as release 
 
 Bump `port/include/version.h`, `build_wasm.py`, `package_release.py`, publish the zip and
 `latest.json` as `v<version>`, then raise `MIN_VERSION` in
-`online/server/wrangler.jsonc` and deploy when older versions should stop racing (finding 054,
-section 6; finding 088, CL3). macOS and Linux (finding 093, Release): `package_release.py
+`online/server/wrangler.jsonc` and deploy (`node online/server/tools/deploy.mjs`: a watched 10%
+canary, then 100%; rooms move between races, finding 184) when older versions should stop racing
+(finding 054, section 6; finding 088, CL3). macOS and Linux (finding 093, Release): `package_release.py
 --platform mac|linux --game PATH` on that machine (the mac zip is signed there), then
 `--merge` its `latest.json` into the Windows one; publish every zip with the one `latest.json`.
 Installers (finding 125, after 0.7.5): the same runs also make each platform's installer from the

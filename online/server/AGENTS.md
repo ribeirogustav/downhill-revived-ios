@@ -3,9 +3,12 @@
 The root `AGENTS.md` rules apply. Protocol: `docs/online-protocol.md`; steps and deployment:
 `README.md` here.
 
-- Races are state sync (finding 044). Since protocol 3 the STATE and EVENT frames travel over
-  Cloudflare Realtime SFU (TURN over TLS as the fallback); the room only sets up each racer's
-  session and credentials and never sends a player another's address, SDP or credentials
+- Races are state sync (finding 044). The STATE and EVENT frames travel over
+  Cloudflare Realtime SFU (TURN over TLS as the fallback), or in a P2P room over peer connections
+  around a hub (finding 186: its members see each other's addresses; the room relays only the
+  star's signaling, its fallback members use the SFU); the room only sets up each member's
+  session (one per room stay, its subscriptions made at the grid's lock: finding 177) and
+  credentials and never sends a player another's address, SDP, session id or credentials
   (finding 158). Do not add input lockstep, input delay or race hashes. Rooms, sessions and
   rules: findings 118, 119, 123, 128, 135, 137; the abuse guard: finding 161; the update backup
   `/v1/latest`: finding 138.
@@ -15,8 +18,15 @@ The root `AGENTS.md` rules apply. Protocol: `docs/online-protocol.md`; steps and
 - `MIN_VERSION` in `wrangler.jsonc` is the oldest game release the server lets in. Raise it only
   when a release is published and older ones should stop racing; read the value from the file,
   never copy it into docs.
-- Deploying restarts every open room: never deploy during races, and only from the maintainer's
-  account after review (deploy notes are kept outside the repository).
+- `wrangler.jsonc` is the official main Worker's config: `tools/deploy.mjs` uploads versions, which
+  Cloudflare refuses for a version that creates a Durable Object class, so a new class needs a plain
+  `wrangler deploy` first. P2P rooms are the same Room class with another race transport (a star of
+  peer connections around a hub, the SFU as a member's fallback; finding 186).
+- Deploy with `tools/deploy.mjs` (finding 184), only from the maintainer's account after review
+  (deploy notes are kept outside the repository): a 10% canary watched in Workers Logs, then 100%
+  or a rollback; busy rooms adopt the new code between races (`src/rollout.ts`). `--emergency`
+  (immediate, every room restarts at once) is for urgent fixes only. Worker↔room messages and
+  stored state stay readable by the previous version: a rollout runs both.
 - Old clients keep connecting: a change to a message must stay readable by the oldest
   `MIN_VERSION` client, or come with a raised minimum.
 - Checks: `npm test` (vitest in the Workers runtime) and `npm run typecheck`; `npm run

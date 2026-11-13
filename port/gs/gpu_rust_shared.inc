@@ -120,7 +120,7 @@ static void native_texture_release(NativeTexture *t)
     t->gpu = NULL; t->sharp = NULL;
 }
 
-#if defined(NATIVE_INLINE) || defined(DHD_IOS_RENDER)
+#ifdef DHD_IOS_RENDER
 /* Between fields, recreate scaled color/depth surfaces and let the next claim import GS
    memory. Effects held only in GPU textures can disappear for the first field after a change.
    The caller must have finished rendering all fields already handed over. */
@@ -258,6 +258,10 @@ static void native_picture(Native *n, NativeFrame *f, const NativeVertex *vertic
         n->display_width = r.display_width; n->display_height = r.display_height;
         shown = r.shown != 0;
     }
+    /* Native VU (finding 194): a GPU that can't draw the translated meshes (the renderer logged why)
+       sends every batch back to the VU from its next run, for the rest of the session */
+    if (__atomic_load_n(&gs_mesh_mode, __ATOMIC_RELAXED) && !dhdr_native_meshes())
+        __atomic_store_n(&gs_mesh_mode, 0, __ATOMIC_RELAXED);
     native_note_flat(n, f);
     double encoded = spikes ? host_wall_seconds() : 0;
     native_rstat_add(RSTAT_DRAW, rs);
@@ -281,6 +285,9 @@ static void native_picture(Native *n, NativeFrame *f, const NativeVertex *vertic
     }
 }
 
+/* A present failed: per side, a lost device is noticed (x64: the game ends, finding 171). */
+static void native_device_lost(void);
+
 /* The displayed picture onto surface, configured to w x h (the window or the canvas): drawn in the
    rectangle that keeps its shape (native_present_rect), the sides filled for widescreen's 4:3
    pictures, resize when the size changed.
@@ -302,6 +309,7 @@ static int native_present_draw(Native *n, DhdrSurface *surface, unsigned w, unsi
     if (drawn < 0) {
         n->present_failed = 1;
         fprintf(stderr, "gs native: presenting failed; no more pictures are shown\n");
+        native_device_lost();
     }
     return drawn;
 }
@@ -364,8 +372,8 @@ static void native_scale_hold(Native *n, uint64_t memory)
     if (n->scale_setting > limit) n->scale_setting = limit;
 }
 
-/* native_init's common half: the Native over exact, the dual-source choice (DHD_WGPU_DUAL_SOURCE=0
-   turns it off), the Rust native renderer, the present options, the scale limit (native_scale_hold
+/* native_init's common half: the Native over exact, dual-source blending when the device has it
+   (the device decided: DHD_WGPU_DUAL_SOURCE, Intel GPUs; finding 188), the Rust native renderer, the present options, the scale limit (native_scale_hold
    with memory) and the replacements' device. NULL when unavailable (g keeps the exact renderer);
    *start: the time before Rust built its shaders and pipelines. */
 static Native *native_create_rust(NativeExact *exact, uint64_t memory, double *start)
@@ -377,8 +385,7 @@ static Native *native_create_rust(NativeExact *exact, uint64_t memory, double *s
        native_convert (init.rs inverse_table); C needs only color_pixel from it. */
     static uint32_t inverse[4096];
     native_inverse_table(n, inverse);
-    const char *dual = getenv("DHD_WGPU_DUAL_SOURCE");
-    n->dual = (dhdr_device_features() & DHDR_FEAT_DUAL_SOURCE) && !(dual && !atoi(dual));
+    n->dual = (dhdr_device_features() & DHDR_FEAT_DUAL_SOURCE) != 0;
     *start = host_wall_seconds();
     if (!(n->r = dhdr_native_create(n->dual ? DHDR_NATIVE_DUAL : 0)) ||
         !(n->snapshot = calloc(1, sizeof *n->snapshot))) {

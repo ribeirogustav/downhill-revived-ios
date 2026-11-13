@@ -49,13 +49,29 @@ change needs them or someone asks.
 
 | Decision | Since | Finding | Do not |
 |---|---|---|---|
-| Online races are state sync: each game runs its own one-player race, the others are puppet riders moved from snapshots (30 a second); hits are events; each game times its own finish | 2026-10-16 | 044 | add input lockstep, input delay, state hashes or tick agreement between PCs; peers share neither frame rate nor floats |
-| Race frames travel through Cloudflare only (Realtime SFU, TURN over TLS on 443 as the fallback); the room sets them up; no player ever receives another's address | 2026-11-06 | 158 | add peer-to-peer links or a TURN mesh, or send a player another's address, SDP, TURN credentials, address hash or install id |
+| Online races are state sync: each game runs its own one-player race, the others are puppet riders moved from snapshots (each player's own rider 60 a second, AI riders 30); hits are events; each game times its own finish | 2026-10-16 | 044 | add input lockstep, input delay, state hashes or tick agreement between PCs; peers share neither frame rate nor floats |
+| Race frames travel through Cloudflare only (Realtime SFU, TURN over TLS on 443 as the fallback); the room sets them up, one Realtime session per member per room; no player ever receives another's address | 2026-11-06 | 177 | add peer-to-peer links or a TURN mesh, or send a player another's address, SDP, session id, TURN credentials, address hash or install id |
 | One delta-time game clock at every frame rate, 60 included and online; deterministic runs keep the original clock | 2026-11-02 | 139 | add a fixed 1/60 step, a frame cap with repaid debt, or extra online fields |
 | Our own GS renderer (Rust, wgpu) with an exact and a native front end; PCSX2 is the referee (replay the same GS stream), not the renderer | 2026-10-14 | 085 | swap in PCSX2's GS or blame the renderer before replaying the stream (025) |
 | One code path for every platform, no legacy kept beside a new path; old code is deleted when replaced | 2026-10-27 | 099 | keep a second implementation "as a fallback" (the 32-bit build, D3D11, XInput, the game's updater are gone, 088) |
 | Keep the original game's feel: no gameplay additions; QoL and online features are welcome | 2026-10-31 | | add custom music, taunts, assists or handling changes |
-| No online play on Android or in the browser yet: the host does not offer it | 2026-11-03 | 143 | enable ONLINE there without a decision |
+| No SFU rooms on Android or in the browser yet: there the host offers P2P rooms only (`host_service_net_offered`) | 2026-11-03 | 143 | offer SFU rooms (public lists, Quick Race) there without a decision |
+
+P2P rooms (180, 186) are the one exception to "race frames through Cloudflare only": the creator
+picks SFU or P2P per room; a P2P room is the same server room with a second race transport (a
+star of peer connections around a hub the room picks, the room's SFU for a member who can't reach
+it), and the race's synchronization is the SFU's. The owner authorizes peer addressing for them,
+so a P2P room is private (joined by its code, never listed; the game says players see each
+other's network address), and P2P rooms on Android and in the browser (SFU rooms stay
+desktop-only there). They ship from 0.7.14 on (after the test prerelease test-p2p-1). Native iOS
+app work is deferred.
+
+Native VU (194, 198) is the players' default on every platform but the browser (a Graphics
+setting, on by default; the owner, 2026-11-11). The emulated VU1 path is the one exception to "one
+code path" on the GPU side: it remains only as the automatic fallback (a GPU that refuses the mesh
+draws, one dhd.log line), as the setting's off (troubleshooting) and as the browser's path, and is
+deleted in a later lane once players' logs show no fallbacks. Do not build on the emulated draw
+path for the translated loops, and do not make it the default again.
 
 A lane's plan is its finding: copy `docs/findings/TEMPLATE.md` on the lane's first commit
 (`Status: in progress`, which reserves the number) and keep its Progress, Decisions and Surprises

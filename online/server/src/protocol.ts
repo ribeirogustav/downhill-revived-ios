@@ -1,32 +1,26 @@
 // Wire protocol constants and pure helpers. The specification is docs/online-protocol.md.
 
-export const PROTOCOL = 3;
+export const PROTOCOL = 4;
 
 export const MAX_MEMBERS = 10;
 export const DEFAULT_MAX_PLAYERS = 10;
 export const MAX_TEXT_BYTES = 4096;
-/** A STATE frame carries all of a player's riders (port/net/net.h NET_FRAME_MAX). */
-export const MAX_BINARY_BYTES = 3072;
 
 export const HELLO_TIMEOUT_MS = 10_000;
 export const PING_INTERVAL_MS = 2_000;
 export const START_LEAD_MS = 3_000;
 /**
- * The race room's countdown: once everyone is ready the race starts by itself this long after
- * (any change that unreadies someone stops it). Only rooms whose every member's hello lists
- * the "countdown" feature run it; older clients start by the host's `start` alone.
+ * The race room's countdown: once the grid locks (everyone ready, the host's Start, or an
+ * intermission's end) the race starts by itself this long after (finding 115).
  */
 export const COUNTDOWN_MS = 5_000;
-export const FEATURE_COUNTDOWN = "countdown";
 export const RTT_SAMPLES = 5;
 
-// Binary race frames. (Types 1 and 2 were the first design's INPUT and HASH, input lockstep, which
-// the game no longer uses; the server drops them.)
+/** The one binary message on a room's WebSocket: the game's PING and the server's PONG, which adds
+ *  the server's clock. The race's frames travel over the Realtime SFU (finding 158) or, in a P2P
+ *  room, the peer connections between the games (finding 186); any other binary message is dropped. */
 export const FRAME_PING = 3;
 export const FRAME_PONG = 4;
-/** State sync (finding 044): a rider snapshot and a gameplay event, relayed as they are. */
-export const FRAME_STATE = 5;
-export const FRAME_EVENT = 6;
 export const PING_MAX_PAYLOAD = 32;
 
 /** Refusal reasons and the close code each one uses. */
@@ -56,19 +50,14 @@ export type ErrorCode = keyof typeof CLOSE_CODES | "not_host" | "not_ready" | "b
 // ---- The client version gate ----
 
 /**
- * The oldest release that may play, when wrangler.jsonc's MIN_VERSION is missing or not a
- * version. Keep it at the oldest release still allowed.
+ * The oldest release that may play when wrangler.jsonc's MIN_VERSION is missing or not a version:
+ * the first that speaks protocol 4.
  */
-export const DEFAULT_MIN_VERSION = "0.1.0";
+export const DEFAULT_MIN_VERSION = "0.7.13";
 /**
- * Release 0.1.0 sends no hello.clientVersion (its hello.version is "dhd-port <exe hash>"), so a
- * hello without one is taken as 0.1.0.
- */
-export const LEGACY_CLIENT_VERSION = "0.1.0";
-/**
- * The refusal text. 0.1.0 shows an error's `message` as it is, in the online menu's footer, so
- * it must fit there: 44 characters, the footer holds about 45 at 640 pixels (finding 054).
- * Newer clients recognise the code, show their own copy and offer to update.
+ * The refusal text. Every release shows an error's `message` in the online menu's footer, which
+ * holds about 45 characters at 640 pixels (finding 054); this is 44. Since 0.2.0 the game also
+ * offers Update Now for its code.
  */
 export const OUTDATED_MESSAGE = "A new version is out. Update to play online.";
 
@@ -85,9 +74,9 @@ export function compareVersions(a: number[], b: number[]): number {
   return 0;
 }
 
-/** The release a hello comes from: its clientVersion, else 0.1.0 (see LEGACY_CLIENT_VERSION). */
+/** The release a hello comes from, "" when it names none (0.1.0 did not): unreadable, so outdated. */
 export function clientVersionOf(hello: Record<string, unknown>): string {
-  return hello.clientVersion === undefined ? LEGACY_CLIENT_VERSION : String(hello.clientVersion).slice(0, 32);
+  return hello.clientVersion === undefined ? "" : String(hello.clientVersion).slice(0, 32);
 }
 
 /** The configured minimum (MIN_VERSION), or DEFAULT_MIN_VERSION when it isn't a version. */
@@ -105,17 +94,27 @@ export function isOutdated(clientVersion: string, minVersion: string): boolean {
 // Join codes: no 0/O, 1/I/L.
 export const CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
 export const CODE_LENGTH = 6;
+/** A P2P room's code is one longer (findings 180, 186): the game tells the two kinds apart by length
+    alone, and a room whose members see each other's addresses is harder to guess. */
+export const P2P_CODE_LENGTH = 7;
 
-export function randomCode(): string {
-  const bytes = new Uint8Array(CODE_LENGTH);
+/** A room's code as the server's logs and its moderation log show it (finding 186): a P2P room's
+    by its first two characters, as the game's dhd.log does (port/net/net.h net_log_code), since the
+    code lets anyone in and so see the hub's network address; an SFU room's as it is. */
+export function logCode(code: string): string {
+  return code.length === P2P_CODE_LENGTH ? code.slice(0, 2) + "*".repeat(code.length - 2) : code;
+}
+
+export function randomCode(length = CODE_LENGTH): string {
+  const bytes = new Uint8Array(length);
   crypto.getRandomValues(bytes);
   let code = "";
   for (const b of bytes) code += CODE_ALPHABET[b % CODE_ALPHABET.length];
   return code;
 }
 
-export function isValidCode(code: string): boolean {
-  if (code.length !== CODE_LENGTH) return false;
+export function isValidCode(code: string, length = CODE_LENGTH): boolean {
+  if (code.length !== length) return false;
   for (const c of code) if (!CODE_ALPHABET.includes(c)) return false;
   return true;
 }

@@ -1,8 +1,9 @@
 import { exports } from "cloudflare:workers";
+import { PROTOCOL } from "../src/protocol";
 
 export const VERSION = "dhd-port test";
 /** The release the test clients claim (hello.clientVersion); vitest.config.ts sets MIN_VERSION to it. */
-export const CLIENT_VERSION = "0.2.0";
+export const CLIENT_VERSION = "0.7.13";
 export const ISO = "a".repeat(64);
 
 type Frame = string | ArrayBuffer | Blob;
@@ -65,7 +66,7 @@ export class Client {
   }
 
   hello(name: string, extra: object = {}): void {
-    this.sendJson({ type: "hello", protocol: 3, version: VERSION, clientVersion: CLIENT_VERSION, isoSha256: ISO, name, ...extra });
+    this.sendJson({ type: "hello", protocol: PROTOCOL, version: VERSION, clientVersion: CLIENT_VERSION, isoSha256: ISO, name, ...extra });
   }
 
   sendJson(obj: object): void {

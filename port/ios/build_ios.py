@@ -12,6 +12,7 @@
 import argparse
 import json
 import os
+import plistlib
 import stat
 import tempfile
 import zipfile
@@ -40,12 +41,19 @@ def setup_env():
             os.environ.setdefault('WASI_SYSROOT', str(cand))
             break
 
-    wabt_dir = devcaches / 'wabt/wabt-1.0.42'
-    if wabt_dir.exists():
-        os.environ.setdefault('WABT_DIR', str(wabt_dir))
-        wabt_bin = wabt_dir / 'bin'
-        if wabt_bin.is_dir() and str(wabt_bin) not in os.environ.get('PATH', ''):
-            os.environ['PATH'] = str(wabt_bin) + os.pathsep + os.environ.get('PATH', '')
+    bundled_simde = ROOT / 'port' / 'third_party' / 'simde-src'
+    if (bundled_simde / 'simde' / 'x86' / 'sse2.h').is_file():
+        os.environ.setdefault('SIMDE_DIR', str(bundled_simde))
+
+    wasm2c = shutil.which('wasm2c')
+    cache_wabt = devcaches / 'wabt/wabt-1.0.42'
+    candidates = [cache_wabt]
+    if wasm2c:
+        candidates.append(Path(wasm2c).resolve().parents[1])
+    for wabt_dir in candidates:
+        if (wabt_dir / 'share/wabt/wasm2c').is_dir() and (wabt_dir / 'bin/wasm2c').is_file():
+            os.environ.setdefault('WABT_DIR', str(wabt_dir))
+            break
 
     if sys.platform == 'darwin':
         os.environ.setdefault('DHD_X86_CLANG', '/usr/bin/clang')
@@ -127,7 +135,11 @@ def prepare_project_bundle(team=None):
         shutil.copytree(appicon_src, appicon_dst)
 
     # 4. Info.plist & LaunchScreen.storyboard
-    shutil.copyfile(HERE / 'project' / 'Info.plist', PROJECT / 'Info.plist')
+    name, code = version()
+    plist = plistlib.loads((HERE / 'project' / 'Info.plist').read_bytes())
+    plist['CFBundleShortVersionString'] = name
+    plist['CFBundleVersion'] = str(code * 100 + 1)
+    (PROJECT / 'Info.plist').write_bytes(plistlib.dumps(plist))
     if (HERE / 'project' / 'LaunchScreen.storyboard').exists():
         shutil.copyfile(HERE / 'project' / 'LaunchScreen.storyboard', PROJECT / 'LaunchScreen.storyboard')
 
@@ -265,12 +277,12 @@ def find_connected_device():
         Path(tmp).unlink(missing_ok=True)
 
 
-def package_ipa(app_path: Path) -> Path:
+def package_ipa(app_path: Path, output: Path | None = None) -> Path:
     """Package once, preserving executable modes and framework symlinks; publish atomically."""
-    OUT.mkdir(parents=True, exist_ok=True)
-    ipa_path = OUT / 'DownhillRevived.ipa'
-    with tempfile.TemporaryDirectory(prefix='ipa-', dir=OUT) as temp:
-        staged = Path(temp) / 'DownhillRevived.ipa'
+    ipa_path = output if output is not None else OUT / 'DownhillRevived.ipa'
+    ipa_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='ipa-', dir=ipa_path.parent) as temp:
+        staged = Path(temp) / ipa_path.name
         with zipfile.ZipFile(staged, 'w', zipfile.ZIP_DEFLATED, strict_timestamps=False) as archive:
             for item in sorted(app_path.rglob('*')):
                 name = (Path('Payload') / app_path.name / item.relative_to(app_path)).as_posix()
@@ -286,8 +298,57 @@ def package_ipa(app_path: Path) -> Path:
     return ipa_path
 
 
-def main():
+def build_application(config, team, *, unsigned, derived_data, device_id=None, update_profiles=False):
+    print('ios: building with xcodebuild (%s)...' % ('unsigned' if unsigned else 'signed'), flush=True)
+    cmd = [
+        'xcodebuild', '-project', str(PROJECT / 'DownhillRevived.xcodeproj'),
+        '-scheme', 'DownhillRevived', '-configuration', config,
+        '-derivedDataPath', str(derived_data),
+        '-destination', ('id=' + device_id) if device_id else 'generic/platform=iOS',
+        'DEVELOPMENT_TEAM=' + ('' if unsigned else team),
+        'CODE_SIGN_STYLE=Automatic',
+        'CODE_SIGNING_ALLOWED=' + ('NO' if unsigned else 'YES'),
+        *(['-allowProvisioningUpdates'] if update_profiles else []),
+        *(['-allowProvisioningDeviceRegistration'] if update_profiles and device_id else []),
+        'build'
+    ]
+    subprocess.run(cmd, check=True)
+    app_path = derived_data / 'Build' / 'Products' / ('%s-iphoneos' % config) / 'Downhill Revived.app'
+    if not app_path.is_dir():
+        raise RuntimeError('The current build did not produce Downhill Revived.app')
+    print('ios: built application at', app_path)
+    if not unsigned:
+        # Preserve the bundle as signed by Xcode, including nested code and the device profile.
+        if not (app_path / 'embedded.mobileprovision').is_file():
+            raise RuntimeError('The signed app has no provisioning profile. Configure its Team in Xcode, '
+                               'or pass --allow-provisioning-updates to let Xcode update it.')
+        subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app_path)], check=True)
+    return app_path
+
+
+def build_both(config, team, version_name, *, device_id=None, update_profiles=False):
+    import package_unsigned
+
+    OUT.mkdir(parents=True, exist_ok=True)
+    public_name = f'DownhillRevived-{version_name}-GitHub-unsigned.ipa'
+    private_name = f'DownhillRevived-{version_name}-Pessoal-signed.ipa'
+    with tempfile.TemporaryDirectory(prefix='ipa-pair-', dir=OUT) as tmp:
+        staging = Path(tmp)
+        public_app = build_application(config, '', unsigned=True,
+                                       derived_data=OUT / 'DerivedData-Unsigned')
+        package_unsigned.package_unsigned_ipa(public_app, staging / public_name, update_canonical=False)
+        private_app = build_application(config, team, unsigned=False, derived_data=OUT / 'DerivedData',
+                                        device_id=device_id, update_profiles=update_profiles)
+        package_ipa(private_app, staging / private_name)
+        for name in (public_name, private_name):
+            os.replace(staging / name, OUT / name)
+            print('ios: IPA pronto em', OUT / name)
+    return private_app
+
+
+def main(argv=None, *, prompt_team=False):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    ap.add_argument('--rebuild-core', action='store_true', help='force recompilation of libdhd_ios.a even if present')
     ap.add_argument('--wasm', type=Path, help='explicit prebuilt core; otherwise rebuild from current source')
     ap.add_argument('--release', action='store_true', default=True, help='build in Release configuration (default)')
     ap.add_argument('--debug', action='store_true', help='build in Debug configuration')
@@ -295,15 +356,19 @@ def main():
     ap.add_argument('--core-only', action='store_true', help='rebuild the core and renderer without Xcode packaging')
     ap.add_argument('--jobs', type=int, default=4, help='parallel compiles (default 4)')
     ap.add_argument('--team', help='Apple development team (or DHD_APPLE_TEAM)')
-    ap.add_argument('--unsigned', action='store_true', help='compile without signing; cannot install this output')
+    signing = ap.add_mutually_exclusive_group()
+    signing.add_argument('--unsigned', action='store_true', help='compile without signing; cannot install this output')
+    signing.add_argument('--both', action='store_true', help='generate separate unsigned and development-signed IPAs')
     ap.add_argument('--allow-provisioning-updates', action='store_true', help='let Xcode update signing assets in your Apple account')
-    ap.add_argument('--device', help='explicit paired device identifier for --install')
+    ap.add_argument('--device', help='paired device identifier for --install or signing with --both')
     ap.add_argument('--install', action='store_true', help='install to connected iPhone via devicectl')
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     if args.unsigned and args.install:
         ap.error('--unsigned cannot be combined with --install')
-    if args.device and not args.install:
-        ap.error('--device requires --install')
+    if args.device and not (args.install or args.both):
+        ap.error('--device requires --install or --both')
+    if args.both and (args.bundle_only or args.core_only):
+        ap.error('--both requires a complete app build')
     if args.install and (args.bundle_only or args.core_only):
         ap.error('--install requires a complete app build')
     if args.jobs < 1:
@@ -313,11 +378,17 @@ def main():
     if sys.platform != 'darwin' and not args.bundle_only:
         ap.error('iOS compilation requires macOS and the iPhoneOS SDK; use --bundle-only to prepare sources')
 
-    team = resolve_team(args.team)
     preflight(args.bundle_only, args.core_only)
-    device_id, device_info = None, None
+    team = resolve_team(args.team)
+    if args.both and not team and prompt_team and sys.stdin.isatty():
+        team = resolve_team(input('Team ID da sua conta Apple no Xcode (10 caracteres): ').strip())
+    if args.both and not team:
+        ap.error('informe o Team ID da Apple com --team ou DHD_APPLE_TEAM')
+
+    device_id, device_info = args.device, args.device
     if args.install:
-        device_id, device_info = (args.device, args.device) if args.device else find_connected_device()
+        if not device_id:
+            device_id, device_info = find_connected_device()
         if not device_id:
             ap.error('No paired iOS device found; connect it or pass --device IDENTIFIER.')
 
@@ -325,7 +396,11 @@ def main():
     print('ios: Downhill Revived v%s (code %d) iOS Port' % (ver_name, ver_code))
 
     if not args.bundle_only:
-        prepare_native_core(args.wasm, args.jobs)
+        core_lib = ROOT / 'build' / 'host64-ios' / 'libdhd_ios.a'
+        if args.rebuild_core or not core_lib.is_file():
+            prepare_native_core(args.wasm, args.jobs)
+        else:
+            print('ios: using existing game core (libdhd_ios.a, %.1f MB)' % (core_lib.stat().st_size / (1024 * 1024)))
     if args.core_only:
         return 0
     prepare_project_bundle(team)
@@ -334,41 +409,18 @@ def main():
         print('\n[NOTE] Project bundle prepared at: build/ios/project/')
         return 0
 
-    print('ios: building with xcodebuild...')
     config = 'Debug' if args.debug else 'Release'
-    cmd = [
-        'xcodebuild', '-project', str(PROJECT / 'DownhillRevived.xcodeproj'),
-        '-scheme', 'DownhillRevived', '-configuration', config,
-        '-derivedDataPath', str(OUT / 'DerivedData'),
-        '-destination', ('id=' + device_id) if device_id else 'generic/platform=iOS',
-        'DEVELOPMENT_TEAM=' + team,
-        'CODE_SIGN_STYLE=Automatic',
-        'CODE_SIGNING_ALLOWED=' + ('NO' if args.unsigned else 'YES'),
-        *(['-allowProvisioningUpdates'] if args.allow_provisioning_updates else []),
-        'build'
-    ]
-    res = subprocess.run(cmd)
-    if res.returncode != 0:
-        return res.returncode
-
-    # Locate built app
-    app_path = OUT / 'DerivedData' / 'Build' / 'Products' / ('%s-iphoneos' % config) / 'Downhill Revived.app'
-    if not app_path.is_dir():
-        print('ios: the current build did not produce Downhill Revived.app')
-        return 1
-    print('ios: built application at', app_path)
-
-    # Xcode compiles assets and signs nested code in dependency order with the selected team.
-    # Do not mutate the signed bundle or pick an unrelated certificate/profile afterwards.
-    if not args.unsigned:
-        if not (app_path / 'embedded.mobileprovision').is_file():
-            raise RuntimeError('The signed app has no provisioning profile. Configure its Team in Xcode, '
-                               'or pass --allow-provisioning-updates when you want Xcode to update it.')
-        subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app_path)], check=True)
-        package_ipa(app_path)
+    if args.both:
+        app_path = build_both(config, team, ver_name, device_id=device_id,
+                             update_profiles=args.allow_provisioning_updates)
     else:
-        import package_unsigned
-        package_unsigned.package_unsigned_ipa(app_path)
+        app_path = build_application(config, team, unsigned=args.unsigned, derived_data=OUT / 'DerivedData',
+                                     device_id=device_id, update_profiles=args.allow_provisioning_updates)
+        if args.unsigned:
+            import package_unsigned
+            package_unsigned.package_unsigned_ipa(app_path)
+        else:
+            package_ipa(app_path)
 
     if args.install:
         print('ios: installing onto device:', device_info)
@@ -378,10 +430,14 @@ def main():
     return 0
 
 
-if __name__ == '__main__':
+def cli(argv=None, *, prompt_team=False):
     try:
-        sys.exit(main())
-    except (RuntimeError, ValueError, OSError, subprocess.CalledProcessError) as error:
+        return main(argv, prompt_team=prompt_team)
+    except (RuntimeError, ValueError, OSError, EOFError, subprocess.CalledProcessError) as error:
         detail = getattr(error, 'stderr', None) or str(error)
         print('ios: build failed: %s' % detail, file=sys.stderr)
-        sys.exit(1)
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(cli())

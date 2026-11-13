@@ -28,8 +28,6 @@ BIG = 1 << 20  # binary files over 1 MiB need a reason
 BIG_OK = {
     'port/launcher/src-tauri/icons/icon.icns': 'the launcher icon for macOS',
     'port/ios/assets/AppIcon.xcassets/AppIcon.appiconset/icon-1024.png': 'the iOS app icon supplied for this fork',
-    'assets/gameplay-preview.webp': 'animated preview for repo presentation',
-    'assets/gameplay.mp4': 'gameplay recording for repo presentation',
 }
 
 SECRETS = [
@@ -119,7 +117,7 @@ def main(argv):
         path = path.replace('\\', '/')
         low = path.lower()
         ext = os.path.splitext(low)[1]
-        if path.startswith(DATA_DIRS) and not path.startswith('assets/cover.webp') and not path.startswith('assets/gameplay') and not path.startswith('assets/screenshots/'):
+        if path.startswith(DATA_DIRS):
             error(path, 1, f'{path.split("/")[0]}/ holds game data or build output: never commit it')
         if ext in DATA_EXT or DATA_NAMES.search(path):
             error(path, 1, 'game data, a capture, a save or a dump by its name: never commit it')

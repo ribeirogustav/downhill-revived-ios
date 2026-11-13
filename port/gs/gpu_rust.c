@@ -47,6 +47,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "dhd_render.h"   /* -Iport/render/include */
+#include "dhd_render_ext.h"   /* dhdr_device_lost */
 #include "perf_log.h"     /* the perf: lines (finding 129) */
 
 #ifndef DHD_GS_TEST_BUILD
@@ -93,11 +94,13 @@ static void touch_present(DhdrSurface *surface)
 static void counter_present(DhdrSurface *surface, int touched)
 {
     if (SDL_GetAtomicInt(&counter_on) < 0) gs_gpu_counter_apply();
-    int enabled = SDL_GetAtomicInt(&counter_on), ping = -1;
+    int enabled = SDL_GetAtomicInt(&counter_on), server_ms = -1, race_ms = -1, riders_ms = -1;
 #ifndef DHD_GS_TEST_BUILD
-    if (enabled) ping = net_ping_ms();
+    /* the room server's ping, then in a race the other riders' delay (finding 169), else the round
+       trip to the race network (finding 181) */
+    if (enabled) server_ms = net_ping_ms(), race_ms = net_race_ms(), riders_ms = net_riders_ms();
 #endif
-    dhdr_surface_counter(surface, enabled, ping,
+    dhdr_surface_counter(surface, enabled, server_ms, race_ms, riders_ms,
                          (double)SDL_GetPerformanceCounter() / SDL_GetPerformanceFrequency());
     if (!touched) touch_present(surface);
     dhdr_surface_present(surface);
@@ -258,7 +261,8 @@ static int dxgi_adapter(unsigned vendor, unsigned id, DXGI_ADAPTER_DESC1 *desc, 
 #endif
 
 /* The device's settings as DhdrDeviceDesc flags: DHD_WGPU_BACKEND=vulkan (Windows; elsewhere the
-   platform's one API), DHD_WGPU_DEBUG, DHD_WGPU_DUAL_SOURCE=0; on Windows DHD_WGPU_COMPILER=fxc
+   platform's one API), DHD_WGPU_DEBUG, DHD_WGPU_DUAL_SOURCE=0 (never) or =1 (on Intel GPUs too;
+   the rule itself is Rust's device::dual_source, finding 188); on Windows DHD_WGPU_COMPILER=fxc
    (else DXC when dxcompiler.dll is beside the exe) and the adapter: DHD_WGPU_ADAPTER=fallback
    (WARP), else DXGI's first adapter by its PCI ids (the GPU the D3D11 presentation device took
    before), WARP when that is Microsoft's Basic Render Driver (no graphics driver); with no DXGI
@@ -276,7 +280,7 @@ static int device_init(void)
     const char *choice = getenv("DHD_WGPU_ADAPTER"), *dual = getenv("DHD_WGPU_DUAL_SOURCE");
     if (backend && !strcmp(backend, "vulkan")) d.flags |= DHDR_DEV_VULKAN;
     if (getenv("DHD_WGPU_DEBUG")) d.flags |= DHDR_DEV_DEBUG | DHDR_DEV_VALIDATION;
-    if (dual && !atoi(dual)) d.flags |= DHDR_DEV_NO_DUAL_SOURCE;
+    if (dual) d.flags |= atoi(dual) ? DHDR_DEV_DUAL_SOURCE : DHDR_DEV_NO_DUAL_SOURCE;
     d.log_level = getenv("DHD_WGPU_DEBUG") ? DHDR_LOG_WARN : DHDR_LOG_ERROR;
 #ifdef _WIN32
     static char dxc[MAX_PATH + 16];
@@ -360,6 +364,18 @@ static void window_size(const GsWindow *window, unsigned *width, unsigned *heigh
     *width = *height = 0;
     if (window->size) window->size(width, height);
 }
+
+/* A lost device (finding 171): a present failed and the renderer says the device is gone (the driver
+   reset or removed it; every later call draws nothing). Set from the presenting thread; present.c's
+   gs_pump_messages reads it on the game thread (gs_gpu_lost) and ends the game with a message. */
+static SDL_AtomicInt device_lost;
+
+static void device_lost_check(void)
+{
+    if (dhdr_device_lost()) SDL_SetAtomicInt(&device_lost, 1);
+}
+
+int gs_gpu_lost(void) { return SDL_GetAtomicInt(&device_lost); }
 
 /* ---- the native renderer (DHD_RENDER=native) ---- */
 
@@ -503,7 +519,10 @@ int gs_gpu_present(Gs *g, const uint32_t *pixels, unsigned width, unsigned heigh
     if (pixels && (!width || !height || width > 1024 || height > 1024)) return 0;
     if (!pixels && !p->e.display_valid) return 0;
     int r = dhdr_present_exact(p->surface, p->x, pixels, width, height, window_width, window_height);
-    if (r < 0) return 0;
+    if (r < 0) {
+        device_lost_check();
+        return 0;
+    }
     if (pixels) p->e.display_valid = 1;
     if (r == 1) {
         perf_render_size(pixels ? "exact (a movie or the CPU scanout)" : "exact", 1, width, height, window_width,

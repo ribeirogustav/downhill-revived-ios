@@ -1,4 +1,5 @@
 #include "gs.h"
+#include "gs_strip.h"
 #include "present.h"
 #include <stdio.h>
 #include <string.h>
@@ -310,13 +311,14 @@ static void upload_fuzz(void)
     upload_fast.sync_range = upload_slow.sync_range = NULL;
 }
 
-/* The strip fast path (gs_feed's packed_strip, finding 146) against the qword-at-a-time path:
-   the same triangles in the same order and the same state after, for random PACKED strip tags
-   (2 to 5 registers, ADC skips, batches over 256 vertices, any split of the input). upload_fast
-   takes the fast path (draw_strip set), upload_slow the plain one. */
+/* The strip fast paths (gs_feed's packed_strip, finding 146; the game's own layout read from the
+   packet, gs_strip.h, finding 197) against the qword-at-a-time path: the same triangles in the
+   same order and the same state after, for random PACKED strip tags (2 to 5 registers, ADC skips,
+   batches over 256 vertices, any split of the input). upload_fast takes the fast paths (draw_strip
+   and gs_strip_hook set), upload_slow the plain one. */
 enum { STRIP_LOG = 8192 };
 static GsVertex strip_log[2][STRIP_LOG * 3];
-static unsigned strip_logged[2], strip_batches;
+static unsigned strip_logged[2], strip_batches, strip_packets;
 
 static void strip_note(Gs *g, const GsVertex *v)
 {
@@ -339,6 +341,19 @@ static void strip_batch(Gs *g, unsigned prim, const GsVertex *list, unsigned cou
         if (drawn[i]) strip_note(g, list + i);
 }
 
+/* gs_strip_hook as its contract says: draw for each triangle whose third vertex has no ADC. */
+static void strip_packet(Gs *g, const uint32_t *words, unsigned count)
+{
+    CHECK(count >= 3);
+    strip_packets++;
+    GsVertex before = g->vertex, v[3];
+    for (unsigned i = 0; i + 2 < count; i++) {
+        if (gs_strip_adc(words + (i + 2) * GS_STRIP_WORDS)) continue;
+        for (unsigned j = 0; j < 3; j++) gs_strip_vertex(words + (i + j) * GS_STRIP_WORDS, &before, &v[j]);
+        strip_note(g, v);
+    }
+}
+
 static void strips(void)
 {
     static const struct { uint32_t regs; unsigned nreg; } lists[] = {
@@ -346,12 +361,15 @@ static void strips(void)
         {0xC1, 2},      /* RGBAQ, XYZF2 */
         {0xD213, 4},    /* UV, RGBAQ, ST, XYZF3 */
         {0x51321, 5},   /* RGBAQ, ST, UV, RGBAQ, XYZ2: too long for the fast path */
+        {0x412, 3},     /* ST, RGBAQ, XYZF2: the game's, read from the packet (gs_strip_hook) */
+        {0x9412, 3},    /* the same with a nibble past NREG set, as the game's tags have */
     };
     static uint32_t words[(1 + 700 * 5) * 4];
     unsigned random = 0x5EED, differing = 0;
 #define RND (random = random * 1664525u + 1013904223u, random >> 8)
-    for (unsigned trial = 0; trial < 64; trial++) {
-        unsigned which = trial % 4, nreg = lists[which].nreg, loops = 1 + RND % 700, n = 4;
+    for (unsigned trial = 0; trial < 192; trial++) {
+        /* 1 to 700 loops, and the short tags (1 to 4 loops) that never fill the window or just do */
+        unsigned which = trial % 6, nreg = lists[which].nreg, loops = trial % 5 == 4 ? 1 + RND % 4 : 1 + RND % 700, n = 4;
         words[0] = loops | 0x8000; words[1] = nreg << 28 | 1u << 14 | 4u << 15;  /* PRE, PRIM = triangle strip */
         words[2] = lists[which].regs; words[3] = 0;
         for (unsigned l = 0; l < loops; l++)
@@ -363,7 +381,9 @@ static void strips(void)
         for (int pass = 0; pass < 2; pass++) {
             Gs *g = pass ? &upload_slow : &upload_fast;
             gs_reset(g);
+            g->vertex.u = 0x123; g->vertex.v = 0x2345;   /* no list but the third writes UV: they stay */
             g->draw = strip_draw; g->draw_strip = pass ? NULL : strip_batch;
+            gs_strip_hook = pass ? NULL : strip_packet;
             unsigned split = random;
             for (unsigned done = 0; done < n;) {
                 unsigned take = trial & 1 ? n : 1 + (split = split * 1664525u + 1013904223u) % 4000;
@@ -383,15 +403,67 @@ static void strips(void)
             differing++;
     }
 #undef RND
-    CHECK(differing == 0 && strip_batches > 64);
+    CHECK(differing == 0 && strip_batches > 64 && strip_packets > 16);
     upload_fast.draw = upload_slow.draw = NULL;
     upload_fast.draw_strip = NULL;
-    printf("strip fast path: 64 tags, %u batches, %u differing\n", strip_batches, differing);
+    gs_strip_hook = NULL;
+    printf("strip fast paths: 192 tags, %u batches, %u packets read in place, %u differing\n", strip_batches,
+           strip_packets, differing);
+}
+
+/* CSM1 CLUT loads (load_clut: its CT32 rows of finding 197, its CT16 loop, the repeated load it
+   skips) against the entry-by-entry rule: every entry after each load and how many 16-bit halves
+   it changed (clut_writes, state_version), for 16 and 256 entries, every CSA and CLD, a load
+   repeated with and without new words, and a run of words that wraps at the end of memory. */
+static void clut_loads(void)
+{
+    static const unsigned t32[16] = {0,1,4,5,8,9,12,13,2,3,6,7,10,11,14,15};
+    static const unsigned t16[32] = {0,2,8,10,16,18,24,26,4,6,12,14,20,22,28,30,
+                                     1,3,9,11,17,19,25,27,5,7,13,15,21,23,29,31};
+    static const unsigned pages[] = {0, 32, 0x1234, 100, 101, 0x3FFF, 0x3FFE};  /* 0x3FFF: 256 entries wrap */
+    Gs *g = &upload_fast;
+    static uint16_t want[512];
+    unsigned want_cbp[2] = {0, 0}, random = 0xC1E7, differing = 0, loads = 0, skipped = 0, wrapped = 0;
+    gs_reset(g); memset(want, 0, sizeof want);
+#define RND (random = random * 1664525u + 1013904223u, random >> 8)
+    for (unsigned trial = 0; trial < 4000; trial++) {
+        unsigned cbp = pages[RND % 7], wide = RND % 3 == 0, ct16 = RND % 5 == 0, csa = RND % 32, cld = 1 + RND % 5;
+        unsigned count = wide ? 256 : 16, start = (csa & (ct16 ? 31u : 15u)) * 16, changed = 0;
+        if (RND % 3)   /* new words two times in three; else the last ones again */
+            for (unsigned i = 0; i < 256; i++) { unsigned low = RND; g->vram[(cbp * 64 + i) & (GS_VRAM_SIZE / 4 - 1)] = low ^ RND << 16; }
+        uint64_t tex = (uint64_t)(wide ? GS_PSMT8 : GS_PSMT4) << 20 | (uint64_t)cbp << 37 |
+                       (uint64_t)(ct16 ? GS_PSMCT16 : GS_PSMCT32) << 51 | (uint64_t)csa << 56 | (uint64_t)cld << 61;
+        if (cld >= 4 && want_cbp[cld - 4] == cbp) skipped++;
+        else {
+            if (cld >= 2) want_cbp[(cld - 2) & 1] = cbp;
+            loads++; wrapped += wide && !ct16 && cbp == 0x3FFF;
+            for (unsigned i = 0; i < count; i++)
+                if (ct16) {
+                    unsigned a = cbp * 256 + ((i & ~31u) + t16[i & 31]) * 2, to = (start + i) & 511;
+                    uint16_t value = (uint16_t)(g->vram[(a & (GS_VRAM_SIZE - 1)) / 4] >> ((a & 2) * 8));
+                    changed += want[to] != value; want[to] = value;
+                } else if (!wide || i >= start) {   /* 256 entries: those below CSA's stay */
+                    unsigned to = wide ? i : start + i;
+                    unsigned from = wide ? (i & 0x80) | (i & 0x10) << 2 | (i & 0x60) >> 1 | t32[i & 15] : t32[i];
+                    uint32_t value = g->vram[(cbp * 64 + from) & (GS_VRAM_SIZE / 4 - 1)];
+                    changed += (want[to] != (uint16_t)value) + (want[to + 256] != (uint16_t)(value >> 16));
+                    want[to] = (uint16_t)value; want[to + 256] = (uint16_t)(value >> 16);
+                }
+        }
+        uint64_t version = g->state_version + (g->reg[GS_TEX0_1] != tex), writes = g->clut_writes;
+        gs_write(g, GS_TEX0_1, tex);
+        if (memcmp(g->clut, want, sizeof want) || g->clut_writes != writes + changed || g->state_version != version + changed)
+            differing++;
+    }
+#undef RND
+    CHECK(differing == 0 && loads > 2000 && skipped > 100 && wrapped > 50);
+    printf("CLUT loads: %u loads (%u past the end of memory), %u skipped by CLD, %u differing\n", loads, wrapped, skipped,
+           differing);
 }
 
 int main(void)
 {
-    swizzles(); gif(); gif_staging(); palette(); upload_fuzz(); strips();
+    swizzles(); gif(); gif_staging(); palette(); upload_fuzz(); strips(); clut_loads();
     uint32_t pixels[16]; unsigned w = 0, h = 0;
     gs_priv_write(&gs, GS_PMODE, 2);
     gs_priv_write(&gs, GS_DISPFB2, 1 | 1 << 9 | UINT64_C(63) << 32 | UINT64_C(31) << 43);

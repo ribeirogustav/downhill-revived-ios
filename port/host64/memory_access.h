@@ -10,6 +10,18 @@
 #if WASM_RT_USE_SEGUE || WABT_BIG_ENDIAN
 #error Host64 translation requires little-endian linear memory and Segue disabled
 #endif
+#ifndef __has_builtin
+#define __has_builtin(x) 0
+#endif
+#if !__has_builtin(__builtin_assume)
+#if defined(__GNUC__)
+#define __builtin_assume(x) do { if (!(x)) __builtin_unreachable(); } while (0)
+#elif defined(_MSC_VER)
+#define __builtin_assume(x) __assume(x)
+#else
+#define __builtin_assume(x) ((void)0)
+#endif
+#endif
 /* This is an allocator fact, not permission to ignore out-of-bounds accesses.
    Exposing it lets LLVM eliminate checks only for provably in-range addresses. */
 static inline uint64_t host64_memory_size(uint64_t size) {

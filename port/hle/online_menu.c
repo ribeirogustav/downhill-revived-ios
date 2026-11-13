@@ -29,9 +29,21 @@ static const char us_files_sha256[] = "c8c17bcae383daf9f2feadc7f6d7476c43d659ab8
 /* Retail's full event names (also used by its Single Event and records pages).
    Read from the player's data image; omit country, keep FR/MX/TD suffixes intact. */
 extern const char *D_0026EFE8[];
-static const struct { int index; } tracks[] = {
-    {0}, {1}, {2}, {3}, {4}, {5}, {6}, {7}, {8}, {9}, {10}, {11}, {12},
-    {13}, {14}, {15}, {16}, {17}, {18}, {19}, {20}, {22}, {23}, {24}, {25}};
+/* In the Super Career's order, first race to last: retail's D_0026F150 (func_001821E8's career
+   type 3, SETUP+0x10C == 3), read from the player's data image, with Mosh Pit, which no career
+   races, last as in the game's own track lists (D_00296F60). Only the order is ours: the ids,
+   limits and pick-only arena are the game's, so the server and older games see the same tracks
+   (finding 190). The picker, Left / Right on TRACK and the host's rotation (NEXT, RANDOM, the
+   grid-lock switch) all walk it. Read, not copied: any copy of the list in the port's code is a
+   copy of retail's .data that package_release.py's game-data check refuses, as ints and even as
+   bytes, which the wasm compiler widened into vector constants of the same ints for its searches
+   (the macOS build laid them out in one run). */
+extern const int D_0026F150[];
+enum { TRACK_COUNT = 25, MOSH_PIT = 23 };
+static int track_at(int k)
+{
+    return k < TRACK_COUNT - 1 ? D_0026F150[k] : MOSH_PIT;
+}
 static const char *track_name(int index)
 {
     static char names[26][64];
@@ -56,7 +68,11 @@ static int arena(int track) { return track == 23; }
 
 static const char code_letters[] = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";  /* the server's join codes */
 static const char name_letters[] = SETTING_NAME_LETTERS;
-enum { NAME_MAX = SETTING_NAME_MAX, CODE_LENGTH = 6, ROW_TEXT = 96, MAX_ROWS = 12, LIST_MAX = 8, MEMBER_ROWS = 10 };
+/* CODE_LENGTH: an SFU room's code; a P2P room's has one more (port/net/net.h, finding 180). */
+enum { NAME_MAX = SETTING_NAME_MAX, CODE_LENGTH = 6, P2P_CODE_LENGTH = 7, ROW_TEXT = 96, MAX_ROWS = 12, LIST_MAX = 8, MEMBER_ROWS = 10 };
+/* HOME's rows, in this order, those the platform offers (host_service_net_offered: SFU rooms on
+   the desktop, P2P rooms everywhere, finding 180); home_kind[] says what each shown row does. */
+enum { HOME_NAME, HOME_QUICK, HOME_LIST, HOME_PUBLIC, HOME_PRIVATE, HOME_REGION, HOME_P2P, HOME_JOIN, HOME_UPDATE, HOME_KINDS };
 
 enum { HOME, LIST, NAME, CODE, ROOM, QUICK };
 /* The room's rows */
@@ -223,7 +239,7 @@ static void reset_selection(void)
 }
 
 static char text[MAX_ROWS][ROW_TEXT], status[128];
-static int outdated;  /* the server refused this release: HOME offers Update Now (row 5) */
+static int outdated;  /* the server refused this release: HOME offers Update Now */
 /* 44 characters: the footer fits about 45 at 640 wide (0.1.0 shows the server's copy there too) */
 static const char outdated_text[] = "A new version is out. Update to play online.";
 
@@ -372,6 +388,37 @@ static void save(const char *key, const char *env, const char *value)
     hle_env_changed();
 }
 
+/* Where the rooms this player creates run (dhd.ini room_region, DHD_NET_ROOM_REGION; finding 181):
+   the settings table's choices, Auto first. The server makes the room with that location hint. */
+static const SettingInfo *region_setting(void)
+{
+    for (int i = 0; i < COUNT(setting_table); i++)
+        if (!strcmp(setting_table[i].key, "room_region")) return &setting_table[i];
+    return NULL;
+}
+
+static int region_index(void)
+{
+    const SettingInfo *s = region_setting();
+    const char *v = getenv("DHD_NET_ROOM_REGION");
+    for (int i = 0; s && v && i < s->count; i++)
+        if (!strcmp(s->choices[i].value, v)) return i;
+    return 0;  /* unset or unknown: Auto */
+}
+
+static int home_row_of(int kind);
+
+static void region_step(MenuPage *p, int by)
+{
+    const SettingInfo *s = region_setting();
+    if (!s) return;
+    int i = (region_index() + by + s->count) % s->count;
+    save("room_region", "DHD_NET_ROOM_REGION", s->choices[i].value);
+    menu_page_value_set(p, home_row_of(HOME_REGION), "Room Region:", s->choices[i].label, MENU_VALUE_ARROWS);
+    menu_page_sound(by > 0);
+    hle_log("online menu: room region %s\n", s->choices[i].value);
+}
+
 /* What stops this PC from joining a race, or NULL. */
 static const char *not_ready(void)
 {
@@ -405,6 +452,27 @@ static const char *const *disc_note(void)
 static int entry_pick;           /* the letter on offer */
 static char entry[16];
 static int home_row;  /* HOME's row last chosen: the cursor goes back to it */
+
+static int home_kind[HOME_KINDS], home_rows;
+/* A P2P room's members reach its hub's game directly, so each sees the hub's network address and
+   the hub every member's (findings 180, 186). Said on HOME's row and in the room when it opens. */
+static const char p2p_notice[] = "Players in this room can see your network address.";
+static const char p2p_row_notice[] = "Players in it can see your network address.";  /* the footer's 45 */
+static double p2p_notice_until;
+static int p2p_noticed;
+
+static void home_add(MenuPage *p, int kind, const char *label)
+{
+    home_kind[home_rows++] = kind;
+    menu_page_row(p, label, 1);
+}
+
+static int home_row_of(int kind)
+{
+    for (int i = 0; i < home_rows; i++)
+        if (home_kind[i] == kind) return i;
+    return 0;
+}
 static const char *const *disc_shown;  /* the disc_note HOME's rows have */
 
 static void room_open(void);
@@ -440,16 +508,19 @@ static void list_row(int i)
     const char *track = "?";
     char now[24];
     double t = host_service_net_server_ms();
-    for (int k = 0; k < COUNT(tracks); k++)
-        if (tracks[k].index == l->track) track = track_name(tracks[k].index);
+    for (int k = 0; k < TRACK_COUNT; k++)
+        if (track_at(k) == l->track) track = track_name(track_at(k));
     if (strcmp(l->version, version)) snprintf(now, sizeof now, "OTHER VERSION");
     else if (l->full || l->players >= l->max_players) snprintf(now, sizeof now, "FULL");
     else net_lobby_now(l, t, now, sizeof now);  /* counted only on a known server clock (finding 135) */
-    /* where the room runs (EU, NA, ASIA...; finding 135): a far room shows before joining it */
+    /* where the room runs (EU WEST, NA EAST...; finding 181; an older server's EU, NA...; finding
+       135): a far room shows before joining it */
+    const char *where = l->area[0] ? l->area : l->region;
     snprintf(text[i], ROW_TEXT, "%.14s  %s%s%d/%d  %s  %s", l->room_name[0] ? l->room_name : l->host_name,
-             l->region, l->region[0] ? "  " : "", l->players, l->max_players, track, now);
+             where, where[0] ? "  " : "", l->players, l->max_players, track, now);
 }
 
+/* create: 0 joins the room of `code`, else makes a room: HOME_PUBLIC, HOME_PRIVATE or HOME_P2P. */
 static void enter_room(int create, const char *code)
 {
     const char *why = not_ready();
@@ -459,20 +530,22 @@ static void enter_room(int create, const char *code)
         return;
     }
     host_service_net_init(GADDR(server()), GADDR(name), GADDR(version), GADDR(iso_hash));
-    if (create) host_service_net_create_room();
+    if (create) host_service_net_create_room(create == HOME_P2P);
     else if (host_service_net_join_room(GADDR(code)) < 0) {
         snprintf(status, sizeof status, "That code can't be one");
         return;
     }
     reset_selection();
     choosing = 0;
-    public_room = create == 2;
+    public_room = create == HOME_PUBLIC;
+    p2p_noticed = 0;
     if (create) room_options &= ~ROOM_CHEATS;  /* a new room starts with cheats off */
     room_settings_sent = rotation_sent = !create;  /* a guest who becomes host keeps the room as it is */
     room_ready_sent = 0;
     connecting = 1;
     snprintf(status, sizeof status, "Connecting to the server...");
-    hle_log("online menu: %s %s\n", create ? "creating a room" : "joining", create ? (public_room ? "(public)" : "(private)") : code);
+    hle_log("online menu: %s %s\n", create ? "creating a room" : "joining",
+            create == HOME_P2P ? "(P2P)" : create ? (public_room ? "(public)" : "(private)") : net_log_code(code).text);
 }
 
 static void page_build(MenuPage *p)
@@ -480,14 +553,22 @@ static void page_build(MenuPage *p)
     switch (screen) {
     case HOME:
         p->title = "ONLINE";
+        home_rows = 0;
         snprintf(text[0], ROW_TEXT, "Name:  %s", name);
-        menu_page_row(p, text[0], 1);
-        menu_page_row(p, "Quick Race", 1);
-        menu_page_row(p, "Public Races", 1);
-        menu_page_row(p, "Create A Public Race", 1);
-        menu_page_row(p, "Create A Private Race", 1);
-        menu_page_row(p, "Join With A Code", 1);
-        if (outdated) menu_page_row(p, "Update Now", 1);
+        home_add(p, HOME_NAME, text[0]);
+        if (host_service_net_offered() & NET_OFFER_SFU) {
+            home_add(p, HOME_QUICK, "Quick Race");
+            home_add(p, HOME_LIST, "Public Races");
+            home_add(p, HOME_PUBLIC, "Create A Public Race");
+            home_add(p, HOME_PRIVATE, "Create A Private Race");
+            /* where a new room runs (finding 181), a P2P one too: its rules and fallback run there (186) */
+            const SettingInfo *s = region_setting();
+            home_kind[home_rows++] = HOME_REGION;
+            menu_page_value(p, "Room Region:", s ? s->choices[region_index()].label : "Auto", MENU_VALUE_ARROWS);
+        }
+        if (host_service_net_offered() & NET_OFFER_P2P) home_add(p, HOME_P2P, "Create A P2P Race");
+        home_add(p, HOME_JOIN, "Join With A Code");
+        if (outdated) home_add(p, HOME_UPDATE, "Update Now");
         disc_shown = disc_note();
         for (const char *const *line = disc_shown; line && *line; line++) menu_page_text(p, *line);
         break;
@@ -528,7 +609,7 @@ static void page_build(MenuPage *p)
 static void entry_text(void)
 {
     const char *letters = screen == NAME ? name_letters : code_letters;
-    int max = screen == NAME ? NAME_MAX : CODE_LENGTH;
+    int max = screen == NAME ? NAME_MAX : P2P_CODE_LENGTH;
     char shown = letters[entry_pick] == ' ' ? '-' : letters[entry_pick];
     if ((int)strlen(entry) < max)
         snprintf(text[0], ROW_TEXT, "%s  %s[%c]", screen == NAME ? "Name:" : "Code:", entry, shown);
@@ -547,7 +628,7 @@ static void refused(const NetLobby *l)
     host_service_net_leave();
     reset_selection();
     connecting = 0;
-    if (too_old) home_row = 6;
+    if (too_old) home_row = home_row_of(HOME_UPDATE);
 }
 
 /* In the room: the host's settings, then this member's first (not ready) state, once each. */
@@ -558,20 +639,20 @@ static void room_sync(const NetLobby *l)
         snprintf(room_name, sizeof room_name, "%s", name);
         /* tests (DHD_NET_SCRIPTED with DHD_NET_TEST_TRACK=<game track index>): the room starts there */
         const char *test_track = getenv("DHD_NET_SCRIPTED") ? getenv("DHD_NET_TEST_TRACK") : NULL;
-        for (int k = 0; test_track && k < COUNT(tracks); k++)
-            if (tracks[k].index == atoi(test_track)) room_track = k;
-        NetRoomSettings s = {tracks[room_track].index, room_options, public_room, 10, -1, room_name};
+        for (int k = 0; test_track && k < TRACK_COUNT; k++)
+            if (track_at(k) == atoi(test_track)) room_track = k;
+        NetRoomSettings s = {track_at(room_track), room_options, public_room, 10, -1, room_name};
         host_service_net_set_room(GADDR(&s));
         room_settings_sent = 1;
     }
     if (l->is_host && !rotation_sent) {
         /* the tracks in the list's order: the room's Then rule (next / random) walks them */
-        static unsigned char ids[COUNT(tracks)];
-        for (int k = 0; k < COUNT(tracks); k++)
-            ids[k] = (unsigned char)(tracks[k].index | ((10 - track_limit(tracks[k].index)) / 2 << 5) | (arena(tracks[k].index) ? 0x80 : 0));
-        host_service_net_rotation(GADDR(ids), COUNT(tracks));
+        static unsigned char ids[TRACK_COUNT];
+        for (int k = 0; k < TRACK_COUNT; k++)
+            ids[k] = (unsigned char)(track_at(k) | ((10 - track_limit(track_at(k))) / 2 << 5) | (arena(track_at(k)) ? 0x80 : 0));
+        host_service_net_rotation(GADDR(ids), TRACK_COUNT);
         rotation_sent = 1;
-        hle_log("online menu: the room's track list: %d tracks, MOSH PIT pick-only\n", COUNT(tracks));
+        hle_log("online menu: the room's track list: %d tracks, MOSH PIT pick-only\n", TRACK_COUNT);
         /* tests (DHD_NET_SCRIPTED with DHD_NET_TEST_THEN=same|next|random): the host's Then rule */
         const char *test_then = getenv("DHD_NET_SCRIPTED") ? getenv("DHD_NET_TEST_THEN") : NULL;
         if (test_then) {
@@ -581,7 +662,7 @@ static void room_sync(const NetLobby *l)
         }
     }
     if (!room_ready_sent) {
-        hle_log("online menu: room %s%s, version %s\n", l->code, l->is_host ? " (host)" : "", version);
+        hle_log("online menu: room %s%s, version %s\n", net_log_code(l->code).text, l->is_host ? " (host)" : "", version);
         host_service_net_set_ready(0);
         room_ready_sent = 1;
     }
@@ -601,8 +682,8 @@ static void connect_poll(MenuPage *p)
     }
     if (l.state != NET_LOBBY && l.state != NET_RACING) return;
     room_sync(&l);
-    for (int k = 0; k < COUNT(tracks); k++)
-        if (tracks[k].index == l.track) room_track = k;
+    for (int k = 0; k < TRACK_COUNT; k++)
+        if (track_at(k) == l.track) room_track = k;
     room_options = l.laps;
     connecting = 0;
     status[0] = 0;
@@ -610,7 +691,7 @@ static void connect_poll(MenuPage *p)
     choosing = 1;
     race = 2;
     host_service_net_pick(-1, -1, 0);  /* "Choosing..." in the room meanwhile */
-    hle_log("online menu: in room %s: choosing the rider\n", l.code);
+    hle_log("online menu: in room %s: choosing the rider\n", net_log_code(l.code).text);
     menu_page_close(p);
 }
 
@@ -647,7 +728,9 @@ static void leave_room(MenuPage *p)
 
 enum { RF_TRACK, RF_BOTS, RF_CHEATS, RF_PUBLIC, RF_RULES, RF_RIDER, RF_READY, RF_START, RF_LEAVE, RF_COUNT };
 enum { RULE_WINDOW, RULE_NEXT, RULE_THEN, RULE_PLAYERS, RULES };
-enum { TOASTS = 3, TRACK_COLUMNS = 2 };
+/* The picker fills its columns top to bottom, so the list reads down the left column, then the
+   right (finding 190): Up / Down step through the list, Left / Right go to the other column. */
+enum { TOASTS = 3, TRACK_COLUMNS = 2, TRACK_ROWS = (TRACK_COUNT + TRACK_COLUMNS - 1) / TRACK_COLUMNS };
 /* The layout, in the popup view's 640 x 224 (menu_draw_size) */
 enum { L_X = 48, L_W = 166, TOP = 40, CARD_X = 224, CARD_W = 368, CARD_Y = 52, CARD_H = 11, CARD_GAP = 0,
        MID_H = 117, BAR_Y = 164, BAR_H = 18, BAR_X = 48, BAR_W = 544, STATUS_Y = 189, TITLE_Y = 14 };
@@ -660,7 +743,7 @@ static int rf = RF_READY, rf_bar = RF_READY;  /* the cursor; the bar's place, ke
 static int track_list, track_cursor;          /* all the tracks, open over the room */
 static int leave_ask, leave_choice;           /* "Leave the room?": 0 Stay, 1 Leave */
 static int rules_open, rules_cursor;          /* ROOM RULES, open over the room */
-static Hit hits[RF_COUNT], code_hit, track_hits[COUNT(tracks)], track_back, leave_hits[2], rule_hits[RULES], rules_back;
+static Hit hits[RF_COUNT], code_hit, track_hits[TRACK_COUNT], track_back, leave_hits[2], rule_hits[RULES], rules_back;
 static int room_buttons, repeat_buttons, repeat_frames;
 static double copied_at;
 static int copied_ok;
@@ -729,7 +812,8 @@ static RoomNow room_now(void)
 static int focusable(int f, const RoomNow *r)
 {
     switch (f) {
-    case RF_TRACK: case RF_BOTS: case RF_CHEATS: case RF_PUBLIC: return r->host && r->in;
+    case RF_TRACK: case RF_BOTS: case RF_CHEATS: return r->host && r->in;
+    case RF_PUBLIC: return r->host && r->in && !room.is_p2p;  /* a P2P room is never listed */
     case RF_RULES: return r->in;  /* everyone reads them; the host changes them */
     case RF_RIDER: return r->in;
     case RF_READY: return r->in && strcmp(r->own_race, "racing") != 0;
@@ -814,8 +898,8 @@ static void send_settings(int track, int options, int is_public)
 static void change_setting(int f, int by)
 {
     if (f == RF_TRACK) {
-        do room_track = (room_track + by + COUNT(tracks)) % COUNT(tracks); while (arena(tracks[room_track].index));
-        send_settings(tracks[room_track].index, -1, -1);
+        do room_track = (room_track + by + TRACK_COUNT) % TRACK_COUNT; while (arena(track_at(room_track)));
+        send_settings(track_at(room_track), -1, -1);
     } else if (f == RF_BOTS)
         send_settings(-1, room_options = room.laps ^ ROOM_NO_BOTS, -1);
     else if (f == RF_CHEATS) {
@@ -866,7 +950,7 @@ static void close_track_list(int choose)
     track_list = 0;
     if (choose && track_cursor != room_track) {
         room_track = track_cursor;
-        send_settings(tracks[room_track].index, -1, -1);
+        send_settings(track_at(room_track), -1, -1);
     }
     menu_play(choose ? "S_SELECT" : "S_BACK");
 }
@@ -899,13 +983,23 @@ static void activate(MenuPage *p, int f, const RoomNow *r)
     (void)p;
 }
 
+/* The next setting from f in direction d (-1 up, 1 down) that takes the cursor, or -1: a P2P
+   room's ROOM row can't (focusable), and landing on it sent the cursor back to the bar on the
+   next frame, so a pad could never reach TRACK, COMPUTER RIDERS or CHEATS there. */
+static int setting_step(int f, int d, const RoomNow *r)
+{
+    for (f += d; f >= RF_TRACK && f <= RF_RULES; f += d)
+        if (focusable(f, r)) return f;
+    return -1;
+}
+
 /* Up and down in the settings, across the bar; up from the bar to the last setting. */
 static void move(int dx, int dy, const RoomNow *r)
 {
-    int was = rf;
+    int was = rf, to = dy ? setting_step(rf, dy, r) : -1;
     if (rf <= RF_RULES) {
-        if (dy < 0 && rf > RF_TRACK && r->host) rf--;
-        else if (dy > 0 && rf < RF_RULES) rf++;
+        if (dy < 0 && to >= 0 && r->host) rf = to;
+        else if (dy > 0 && to >= 0) rf = to;
         else if (dy > 0) rf = focusable(rf_bar, r) ? rf_bar : RF_LEAVE;
     } else if (dx) {
         do rf = RF_RIDER + (rf - RF_RIDER + dx + 4) % 4; while (!focusable(rf, r));
@@ -944,7 +1038,7 @@ static void room_input(MenuPage *p, const RoomNow *r)
         return;
     }
     if (track_list) {
-        int n = COUNT(tracks), to = track_cursor + dx + dy * TRACK_COLUMNS;
+        int n = TRACK_COUNT, to = track_cursor + dx * TRACK_ROWS + dy;
         if ((dx || dy) && to >= 0 && to < n) track_cursor = to, menu_page_sound(dx > 0 || dy > 0);
         if (pressed & PAD_CROSS) close_track_list(1);
         else if (pressed & PAD_TRIANGLE) close_track_list(0);
@@ -989,14 +1083,14 @@ static void room_mouse(MenuPage *p, int x, int y, int moved, int left, int wheel
         return;
     }
     if (track_list) {
-        for (int i = 0; i < COUNT(tracks); i++)
+        for (int i = 0; i < TRACK_COUNT; i++)
             if (inside(&track_hits[i], x, y)) {
                 if (moved && track_cursor != i) track_cursor = i, menu_page_sound(1);
                 if (left) track_cursor = i, close_track_list(1);
             }
         if (left && inside(&track_back, x, y)) close_track_list(0);
         for (; wheel > 0 && track_cursor > 0; wheel--) track_cursor--;
-        for (; wheel < 0 && track_cursor < COUNT(tracks) - 1; wheel++) track_cursor++;
+        for (; wheel < 0 && track_cursor < TRACK_COUNT - 1; wheel++) track_cursor++;
         return;
     }
     if (left && inside(&code_hit, x, y)) {
@@ -1183,7 +1277,7 @@ static void draw_left(const RoomNow *r)
     hit(&hits[RF_TRACK], L_X, TOP + 14, L_W, 20);
     draw_setting(RF_BOTS, TOP + 39, "COMPUTER RIDERS", l->laps & ROOM_NO_BOTS ? "OFF" : "ON", r);
     draw_setting(RF_CHEATS, TOP + 52, "CHEATS", l->laps & ROOM_CHEATS ? "ON" : "OFF", r);
-    draw_setting(RF_PUBLIC, TOP + 65, "ROOM", l->is_public ? "PUBLIC" : "PRIVATE", r);
+    draw_setting(RF_PUBLIC, TOP + 65, "ROOM", l->is_p2p ? "P2P, PRIVATE" : l->is_public ? "PUBLIC" : "PRIVATE", r);
     /* the room's rules in one line; Cross opens them (everyone reads them, the host changes them) */
     on = rf == RF_RULES && !track_list && !leave_ask && !rules_open;
     if (on) bar(L_X + 6, TOP + 77, L_W - 12, 11);
@@ -1317,6 +1411,7 @@ static void draw_status(const RoomNow *r)
         if (r->riding == 1 && !strcmp(l->member[i].race_state, "racing")) riding = i;
     if (status[0]) snprintf(line, sizeof line, "%s", status);
     else if (!r->in) snprintf(line, sizeof line, "CONNECTING TO THE SERVER...");
+    else if (l->is_p2p && host_seconds() < p2p_notice_until) snprintf(line, sizeof line, "%s", p2p_notice);
     else if (r->starting && r->own_ready) snprintf(line, sizeof line, "YOU'RE IN THIS RACE: UNREADY TO STAY OUT"), c = green;
     else if (r->starting) snprintf(line, sizeof line, "YOU WEREN'T READY: READY NOW TO RACE THE ONE AFTER");
     else if (r->racing && r->own_race[0]) {
@@ -1423,11 +1518,12 @@ static void draw_track_list(void)
     rect(0, 0, 640, 224, (const int[]){0, 0, 0}, 90);
     box(36, 24, 568, 176, 110);
     put(MENU_CENTRE, 320, 30, "CHOOSE A TRACK", menu_style(st_row, 115, -1, 0, 0));
-    /* Two columns of names; the rider limit goes beside the picture, so each name has room. 13 rows
-       of 10.5 units fit between the title and BACK. */
-    for (int i = 0; i < COUNT(tracks); i++) {
-        int x = 44 + (i % TRACK_COLUMNS) * 192, y = 45 + (i / TRACK_COLUMNS) * 21 / 2, on = i == track_cursor;
-        const char *name = track_name(tracks[i].index);
+    /* Two columns of names, filled top to bottom in the list's (career) order; the rider limit goes
+       beside the picture, so each name has room. 13 rows of 10.5 units fit between the title and
+       BACK. */
+    for (int i = 0; i < TRACK_COUNT; i++) {
+        int x = 44 + (i / TRACK_ROWS) * 192, y = 45 + (i % TRACK_ROWS) * 21 / 2, on = i == track_cursor;
+        const char *name = track_name(track_at(i));
         MenuStyle s = fit(name, on || i == room_track ? st_on : st_row, 90, 178);
         if (on) bar(x + 2, y - 1, 186, 10);
         put(MENU_CENTRE, x + 95, y, name, s);
@@ -1437,7 +1533,7 @@ static void draw_track_list(void)
         }
         hit(&track_hits[i], x, y - 1, 190, 10);
     }
-    int at = tracks[track_cursor].index;
+    int at = track_at(track_cursor);
     char limit[32];
     snprintf(limit, sizeof limit, "UP TO %d RIDERS", track_limit(at));
     const uint16_t *picture = track_preview(at);
@@ -1518,7 +1614,9 @@ static void room_texts(MenuPage *p)
     } else
         snprintf(title_text, sizeof title_text, "RACE ROOM");
     p->title = title_text;
-    if (rules_open)
+    if (l->state == NET_RECONNECTING && l->notice[0])  /* the server restarts the room (finding 184) */
+        snprintf(footer_text, sizeof footer_text, "%s", l->notice);
+    else if (rules_open)
         snprintf(footer_text, sizeof footer_text, r.host ? GLYPH_LEFT GLYPH_RIGHT " CHANGE   " GLYPH_TRIANGLE " BACK"
                                                          : GLYPH_TRIANGLE " BACK");
     else if (leave_ask)
@@ -1584,24 +1682,31 @@ static void room_draw(MenuPage *p)
             /* the left text's room, less a quarter: mixed-case track names draw wider than
                menu_text_width measures them (as capitals); a tenth was not enough (finding 132) */
             int room_w = (CARD_W - 6 - menu_text_width(head, &st) * 640 / vw - 10) * 3 / 4;
-            char forms[4][64];
+            char forms[5][64];
             const char *what = l->last_race_id ? track_name(l->last_race_track) : NULL, *region = l->room_region;
+            const char *area = l->room_area[0] ? l->room_area : region;  /* finding 181 */
             char players[16];
             snprintf(players, sizeof players, "PLAYERS %d/%d", l->nmembers, l->max_players);
-            /* before a race: the players and where the room runs (finding 135), "- EU SERVER", then
-               "- EU", then left out; after a race: the last race's track only (the region is in the
-               list and was in this header before the race) */
+            /* before a race: the players and where the room runs (findings 135, 181), "- EU WEST
+               SERVER", then "- EU WEST", then "- EU", then left out; after a race: the last race's
+               track only (the region is in the list and was in this header before the race) */
             if (what) {
                 snprintf(forms[0], 64, "LAST RACE - %s", what);
                 snprintf(forms[1], 64, "%s", what);
-                forms[2][0] = forms[3][0] = 0;
+                forms[2][0] = forms[3][0] = forms[4][0] = 0;
             } else {
-                snprintf(forms[0], 64, "%s%s%s%s", players, region[0] ? " - " : "", region, region[0] ? " SERVER" : "");
-                snprintf(forms[1], 64, "%s%s%s", players, region[0] ? " - " : "", region);
-                snprintf(forms[2], 64, "%s", players);
-                forms[3][0] = 0;
+                snprintf(forms[0], 64, "%s%s%s%s", players, area[0] ? " - " : "", area, area[0] ? " SERVER" : "");
+                snprintf(forms[1], 64, "%s%s%s", players, area[0] ? " - " : "", area);
+                if (strcmp(area, region) && region[0]) snprintf(forms[2], 64, "%s - %s", players, region);
+                else forms[2][0] = 0;
+                snprintf(forms[3], 64, "%s", players);
+                forms[4][0] = 0;
             }
-            const char *const texts[] = {forms[0], forms[1], forms[2][0] ? forms[2] : NULL, forms[3][0] ? forms[3] : NULL, NULL};
+            const char *texts[6];
+            int k = 0;
+            for (int f = 0; f < 5; f++)
+                if (forms[f][0]) texts[k++] = forms[f];
+            texts[k] = NULL;
             const char *left = first_fit(texts, st, 80, room_w);
             put(MENU_LEFT, CARD_X + 3, TOP + 1, left, fit(left, st_row, 80, room_w));
         }
@@ -1641,6 +1746,11 @@ static void room_update(MenuPage *p)
 {
     NetLobby *l = &room;
     host_service_net_get_lobby(GADDR(l));
+    if (l->is_p2p && !p2p_noticed) {  /* once per room, when it first shows */
+        p2p_noticed = 1;
+        p2p_notice_until = host_seconds() + 15;
+        hle_log("online menu: P2P room: the address notice shown\n");
+    }
     if (l->state == NET_FAILED || l->state == NET_IDLE) {
         refused(l);
         if (in_shell) {  /* the rider screen's Back, then ONLINE again with the reason */
@@ -1655,10 +1765,10 @@ static void room_update(MenuPage *p)
     int in = l->state == NET_LOBBY || l->state == NET_RACING;
     if (in) room_sync(l);
     if (in)
-        for (int k = 0; k < COUNT(tracks); k++)
-            if (tracks[k].index == l->track) room_track = k;
+        for (int k = 0; k < TRACK_COUNT; k++)
+            if (track_at(k) == l->track) room_track = k;
     if (l->started || l->state == NET_RACING) {
-        hle_log("online menu: room %s: the race starts\n", l->code);
+        hle_log("online menu: room %s: the race starts\n", net_log_code(l->code).text);
         race = 1;
         raced_track = l->track;
         snprintf(raced_code, sizeof raced_code, "%s", l->code);
@@ -1682,7 +1792,7 @@ static void room_update(MenuPage *p)
     if (in) {
         static int seen_cheats = -1;  /* every PC logs the room's cheats as it sees them */
         if (seen_cheats != (l->laps & ROOM_CHEATS))
-            hle_log("online menu: room %s: cheats %s\n", l->code, l->laps & ROOM_CHEATS ? "ON" : "OFF");
+            hle_log("online menu: room %s: cheats %s\n", net_log_code(l->code).text, l->laps & ROOM_CHEATS ? "ON" : "OFF");
         seen_cheats = l->laps & ROOM_CHEATS;
         room_options = l->laps, public_room = l->is_public;
     }
@@ -1728,7 +1838,12 @@ static void page_update(MenuPage *p, int cursor)
             menu_page_rebuild_at(p, cursor);
             break;
         }
-        if (!status[0] && (cursor == 1 || cursor >= 3 || disc_shown) && not_ready()) p->footer = not_ready();
+        {
+            int kind = cursor < home_rows ? home_kind[cursor] : HOME_NAME;
+            /* what keeps this PC out of a room; the list and the name need no disc */
+            if (!status[0] && ((kind != HOME_NAME && kind != HOME_LIST) || disc_shown) && not_ready()) p->footer = not_ready();
+            else if (!status[0] && kind == HOME_P2P) p->footer = p2p_row_notice;
+        }
         break;
     case LIST:
         if (list_state == 2 && !list_shown) menu_page_rebuild(p);  /* the answer came: the rows again */
@@ -1752,7 +1867,7 @@ static void page_update(MenuPage *p, int cursor)
     case NAME:
     case CODE:
         {
-            int action = host_service_text_input_edit(GADDR(entry), (screen == NAME ? NAME_MAX : CODE_LENGTH) + 1, GADDR(screen == NAME ? name_letters : code_letters));
+            int action = host_service_text_input_edit(GADDR(entry), (screen == NAME ? NAME_MAX : P2P_CODE_LENGTH) + 1, GADDR(screen == NAME ? name_letters : code_letters));
             if (action < 0) { go(HOME); return; }
             if (action > 0) { page_accept(p, 1); return; }
         }
@@ -1773,26 +1888,43 @@ static void page_accept(MenuPage *p, int row)
     switch (screen) {
     case HOME:
         home_row = row;
-        if (row == 0) {
+        switch (row < home_rows ? home_kind[row] : -1) {
+        case HOME_NAME:
             snprintf(entry, sizeof entry, "%s", name);
             entry_pick = 0;
             go(NAME);
-        } else if (row == 1 || row == 2) {
-            const char *why = row == 1 ? not_ready() : !server() ? "No server: set server = ... in dhd.ini" : NULL;
+            break;
+        case HOME_QUICK:
+        case HOME_LIST: {
+            int quick = home_kind[row] == HOME_QUICK;
+            const char *why = quick ? not_ready() : !server() ? "No server: set server = ... in dhd.ini" : NULL;
             if (why) snprintf(status, sizeof status, "%s", why);
             else {
                 start_list();
-                go(row == 1 ? QUICK : LIST);
+                go(quick ? QUICK : LIST);
             }
-        } else if (row == 3 || row == 4)
-            enter_room(row == 3 ? 2 : 1, NULL);
-        else if (row == 5) {
-            entry[0] = 0;
+            break;
+        }
+        case HOME_PUBLIC:
+        case HOME_PRIVATE:
+        case HOME_P2P:
+            enter_room(home_kind[row], NULL);
+            break;
+        case HOME_REGION:
+            region_step(p, 1);
+            break;
+        case HOME_JOIN: {
+            /* tests (DHD_NET_SCRIPTED): DHD_NET_TEST_CODE is the code, as if typed (cross_race.py) */
+            const char *test_code = getenv("DHD_NET_SCRIPTED") ? getenv("DHD_NET_TEST_CODE") : NULL;
+            snprintf(entry, sizeof entry, "%.*s", P2P_CODE_LENGTH, test_code ? test_code : "");
             entry_pick = 0;
             go(CODE);
-        } else if (row == 6 && outdated) {
+            break;
+        }
+        case HOME_UPDATE:
             hle_log("online menu: Update Now\n");
             host_service_update_request();  /* ends the game; the launcher updates it */
+            break;
         }
         break;
     case LIST:
@@ -1805,11 +1937,12 @@ static void page_accept(MenuPage *p, int row)
     case NAME:
     case CODE: {
         const char *letters = screen == NAME ? name_letters : code_letters;
-        int max = screen == NAME ? NAME_MAX : CODE_LENGTH;
+        int max = screen == NAME ? NAME_MAX : P2P_CODE_LENGTH;
         size_t n = strlen(entry);
         if (row == 0) {
             if ((int)n < max) entry[n] = letters[entry_pick], entry[n + 1] = 0;
-            if (screen == CODE && (int)n + 1 == max) menu_page_set_cursor(p, 1);  /* the code is whole: Join */
+            /* an SFU code is whole at 6 (Up adds a P2P code's seventh), a P2P one at 7: Join */
+            if (screen == CODE && ((int)n + 1 == CODE_LENGTH || (int)n + 1 == max)) menu_page_set_cursor(p, 1);
         } else if (screen == NAME) {
             while (n && entry[n - 1] == ' ') entry[--n] = 0;
             if (n) {
@@ -1817,14 +1950,14 @@ static void page_accept(MenuPage *p, int row)
                 save("name", "DHD_NET_NAME", name);
             }
             go(HOME);
-        } else if ((int)n == CODE_LENGTH)
+        } else if ((int)n == CODE_LENGTH || (int)n == P2P_CODE_LENGTH)
             enter_room(0, entry);
         else
-            snprintf(status, sizeof status, "A code has %d letters and digits", CODE_LENGTH);
+            snprintf(status, sizeof status, "A code has %d or %d letters and digits", CODE_LENGTH, P2P_CODE_LENGTH);
         break;
     }
     case QUICK:
-        if (list_state == 2 && row == 1) enter_room(2, NULL);
+        if (list_state == 2 && row == 1) enter_room(HOME_PUBLIC, NULL);  /* Quick Race found none: a public room */
         else if (list_state == 2 && row == 2) go(HOME);
         break;
     case ROOM:  /* the room reads the pads itself (room_input) */
@@ -1865,12 +1998,15 @@ static void page_back(MenuPage *p)
 static void page_step(MenuPage *p, int row, int by)
 {
     if (connecting) return;
+    if (screen == HOME && row < home_rows && home_kind[row] == HOME_REGION) {
+        region_step(p, by);
+        return;
+    }
     if ((screen == NAME || screen == CODE) && row == 0) {
         int n = screen == NAME ? (int)sizeof name_letters - 1 : (int)sizeof code_letters - 1;
         entry_pick = (entry_pick + by + n) % n;
         menu_page_sound(by > 0);
     }
-    (void)p;
 }
 
 static void page_left(MenuPage *p, int row) { page_step(p, row, -1); }
@@ -2130,7 +2266,7 @@ int port_online_single_race(void) { return choosing; }
 /* A track's name as the online launcher lists it (presence.c); NULL for a track not in the list. */
 const char *port_track_name(int index)
 {
-    for (int k = 0; k < COUNT(tracks); k++)
-        if (tracks[k].index == index) return track_name(tracks[k].index);
+    for (int k = 0; k < TRACK_COUNT; k++)
+        if (track_at(k) == index) return track_name(track_at(k));
     return NULL;
 }

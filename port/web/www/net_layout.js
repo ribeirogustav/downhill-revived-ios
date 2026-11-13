@@ -110,7 +110,7 @@ export const layout = {
     ]
   },
   "NetLobby": {
-    "size": 5064,
+    "size": 5152,
     "state": [
       0,
       4
@@ -151,12 +151,16 @@ export const layout = {
       136,
       4
     ],
-    "track": [
+    "is_p2p": [
       140,
       4
     ],
-    "laps": [
+    "track": [
       144,
+      4
+    ],
+    "laps": [
+      148,
       4
     ],
     "seed": [
@@ -310,10 +314,26 @@ export const layout = {
     "room_region": [
       5056,
       8
+    ],
+    "room_area": [
+      5064,
+      12
+    ],
+    "room_chosen": [
+      5076,
+      4
+    ],
+    "notice": [
+      5080,
+      64
+    ],
+    "race_go_at": [
+      5144,
+      8
     ]
   },
   "NetLobbyInfo": {
-    "size": 352,
+    "size": 368,
     "code": [
       0,
       8
@@ -373,6 +393,10 @@ export const layout = {
     "timed": [
       348,
       4
+    ],
+    "area": [
+      352,
+      12
     ]
   }
 };

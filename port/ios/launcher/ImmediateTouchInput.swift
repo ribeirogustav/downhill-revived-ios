@@ -22,7 +22,11 @@ final class TouchGlidingRouter {
     }
 
     private var targets: [Target] = []
-    private var activeTouches: [ObjectIdentifier: Set<TouchControlID>] = [:]
+    // Each finger owns exactly one face button, even when layouts have overlapping
+    // 600% hit boxes. Different fingers may still press separate buttons at once.
+    private var activeTouches: [ObjectIdentifier: TouchControlID] = [:]
+    // Remember fingers that moved off every button so they can re-enter later.
+    private var outsideTouches: Set<ObjectIdentifier> = []
 
     func register(id: TouchControlID, view: UIView, haptics: Bool, setPressed: @escaping (Bool) -> Void) {
         unregister(view: view)
@@ -33,77 +37,92 @@ final class TouchGlidingRouter {
         targets.removeAll { $0.view == nil || $0.view === view }
     }
 
-    func touchBegan(_ touch: UITouch, on view: UIView, id: TouchControlID) {
-        let touchId = ObjectIdentifier(touch)
-        activeTouches[touchId] = [id]
-        touch_input_set_button(id, true)
-        if let target = targets.first(where: { $0.view === view }) {
-            target.setPressed(true)
-            if target.haptics {
-                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    private func nearestTarget(at point: CGPoint, window: UIWindow, margin: CGFloat) -> Target? {
+        var closest: Target?
+        var nearest = CGFloat.infinity
+        for target in targets {
+            guard let view = target.view, view.window === window,
+                  !view.isHidden, view.alpha > 0, view.isUserInteractionEnabled else { continue }
+            let position = view.convert(point, from: window)
+            guard view.bounds.insetBy(dx: -margin, dy: -margin).contains(position) else { continue }
+            let dx = position.x - view.bounds.midX, dy = position.y - view.bounds.midY
+            let distance = dx * dx + dy * dy
+            if distance < nearest {
+                nearest = distance
+                closest = target
             }
         }
+        return closest
+    }
+
+    private func isHeld(_ id: TouchControlID, except touchId: ObjectIdentifier? = nil) -> Bool {
+        activeTouches.contains { key, value in
+            key != touchId && !outsideTouches.contains(key) && value == id
+        }
+    }
+
+    private func setButton(_ id: TouchControlID, pressed: Bool) {
+        touch_input_set_button(id, pressed)
+        for target in targets where target.id == id { target.setPressed(pressed) }
+    }
+
+    private func activate(_ id: TouchControlID, touchId: ObjectIdentifier, target: Target?) {
+        if !isHeld(id, except: touchId) { setButton(id, pressed: true) }
+        if let target = target, target.haptics {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        }
+    }
+
+    func touchBegan(_ touch: UITouch, on view: UIView, id: TouchControlID) {
+        let key = ObjectIdentifier(touch)
+        guard activeTouches[key] == nil else { return }
+        let target = view.window.flatMap { window in
+            nearestTarget(at: touch.location(in: window), window: window, margin: 0)
+        }
+        let chosen = target?.id ?? id
+        activeTouches[key] = chosen
+        outsideTouches.remove(key)
+        activate(chosen, touchId: key, target: target ?? targets.first(where: { $0.view === view }))
     }
 
     func touchMoved(_ touch: UITouch, from view: UIView) {
         guard let window = view.window else { return }
-        let touchId = ObjectIdentifier(touch)
-        guard var currentActive = activeTouches[touchId] else { return }
-        let locInWindow = touch.location(in: window)
-
-        for target in targets {
-            guard let targetView = target.view, targetView.window === window else { continue }
-            let locInTarget = targetView.convert(locInWindow, from: window)
-            // Enter hit-box: button bounds expanded by 12 points for responsive rolling
-            let enterBounds = targetView.bounds.insetBy(dx: -12, dy: -12)
-            let isOver = enterBounds.contains(locInTarget)
-
-            if isOver {
-                if !currentActive.contains(target.id) {
-                    currentActive.insert(target.id)
-                    touch_input_set_button(target.id, true)
-                    target.setPressed(true)
-                    if target.haptics {
-                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                    }
-                }
-            } else {
-                // Exit hit-box: slightly larger hysteresis margin (18 points) to prevent jitter
-                let exitBounds = targetView.bounds.insetBy(dx: -18, dy: -18)
-                if !exitBounds.contains(locInTarget) && currentActive.contains(target.id) {
-                    currentActive.remove(target.id)
-                    let isHeldByAnother = activeTouches.contains { otherId, buttons in
-                        otherId != touchId && buttons.contains(target.id)
-                    }
-                    if !isHeldByAnother {
-                        touch_input_set_button(target.id, false)
-                        target.setPressed(false)
-                    }
-                }
-            }
+        let key = ObjectIdentifier(touch)
+        guard let previous = activeTouches[key] else { return }
+        let point = touch.location(in: window)
+        var chosen = nearestTarget(at: point, window: window, margin: 12)
+        if chosen == nil, let existing = targets.first(where: { $0.id == previous }),
+           let current = existing.view, current.window === window {
+            let local = current.convert(point, from: window)
+            if current.bounds.insetBy(dx: -18, dy: -18).contains(local) { chosen = existing }
         }
-        activeTouches[touchId] = currentActive
+        let next = chosen?.id
+        let wasActive = !outsideTouches.contains(key)
+        if wasActive && next == previous { return }
+        // Release the previous action only when this was the last finger on it.
+        // Exclude the finger being moved before checking other owners.
+        if wasActive {
+            outsideTouches.insert(key)
+            if !isHeld(previous, except: key) { setButton(previous, pressed: false) }
+        }
+        if let next {
+            activeTouches[key] = next
+            activate(next, touchId: key, target: chosen)
+            outsideTouches.remove(key)
+        } // Otherwise, keep the touch alive but inactive until it returns.
     }
 
     func touchEnded(_ touch: UITouch) {
-        let touchId = ObjectIdentifier(touch)
-        guard let heldButtons = activeTouches.removeValue(forKey: touchId) else { return }
-        for buttonId in heldButtons {
-            let isHeldByAnother = activeTouches.contains { $0.value.contains(buttonId) }
-            if !isHeldByAnother {
-                touch_input_set_button(buttonId, false)
-                for target in targets where target.id == buttonId {
-                    target.setPressed(false)
-                }
-            }
-        }
+        let key = ObjectIdentifier(touch)
+        let wasOutside = outsideTouches.remove(key) != nil
+        guard let id = activeTouches.removeValue(forKey: key) else { return }
+        if !wasOutside && !isHeld(id) { setButton(id, pressed: false) }
     }
 
     func reset() {
         activeTouches.removeAll()
-        for target in targets {
-            target.setPressed(false)
-        }
+        outsideTouches.removeAll()
+        for target in targets { target.setPressed(false) }
     }
 }
 
@@ -119,6 +138,7 @@ struct ImmediateTouchInput: UIViewRepresentable {
         let view = ImmediateTouchView()
         view.backgroundColor = .clear
         view.controlID = controlID
+        view.isMultipleTouchEnabled = controlID != nil
         view.haptics = haptics
         view.onDown = onDown
         view.onMove = onMove
@@ -129,6 +149,7 @@ struct ImmediateTouchInput: UIViewRepresentable {
 
     func updateUIView(_ view: ImmediateTouchView, context: Context) {
         view.controlID = controlID
+        view.isMultipleTouchEnabled = controlID != nil
         view.haptics = haptics
         view.onDown = onDown
         view.onMove = onMove
@@ -154,32 +175,42 @@ final class ImmediateTouchView: UIView {
     var onMove: (CGPoint, CGPoint, CGSize) -> Void = { _, _, _ in }
     var onUp: () -> Void = {}
     var onVisualPressed: ((Bool) -> Void)?
+    private var buttonFingers = Set<UITouch>()
     private var finger: UITouch?
     private var origin = CGPoint.zero
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        if let cid = controlID {
+            buttonFingers.formUnion(touches)
+            for touch in touches { TouchGlidingRouter.shared.touchBegan(touch, on: self, id: cid) }
+            return
+        }
         guard finger == nil, let touch = touches.first else { return }
         finger = touch
         origin = touch.location(in: self)
         onDown(origin, bounds.size)
-        if let cid = controlID {
-            TouchGlidingRouter.shared.touchBegan(touch, on: self, id: cid)
-        }
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        for touch in touches where buttonFingers.contains(touch) {
+            TouchGlidingRouter.shared.touchMoved(touch, from: self)
+        }
         guard let finger = finger, touches.contains(finger) else { return }
         onMove(finger.location(in: self), origin, bounds.size)
-        if controlID != nil {
-            TouchGlidingRouter.shared.touchMoved(finger, from: self)
-        }
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-        if let finger = finger, touches.contains(finger) { releaseInput() }
+        endTouches(touches)
     }
 
-    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) { releaseInput() }
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) { endTouches(touches) }
+
+    private func endTouches(_ touches: Set<UITouch>) {
+        for touch in touches where buttonFingers.remove(touch) != nil {
+            TouchGlidingRouter.shared.touchEnded(touch)
+        }
+        if let finger, touches.contains(finger) { releaseInput() }
+    }
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
@@ -194,11 +225,10 @@ final class ImmediateTouchView: UIView {
     }
 
     func releaseInput() {
-        guard let touch = finger else { return }
+        for touch in buttonFingers { TouchGlidingRouter.shared.touchEnded(touch) }
+        buttonFingers.removeAll()
+        guard finger != nil else { return }
         finger = nil
-        if controlID != nil {
-            TouchGlidingRouter.shared.touchEnded(touch)
-        }
         onUp()
     }
 }

@@ -168,7 +168,7 @@
 "Controller Stick Deadzone" = "Controller Stick Deadzone";
 
 "Customize Controls" = "Customize Controls";
-"Arrange and remap touch controls" = "Arrange and remap touch controls";
+"Arrange and remap touch controls" = "Edit touch layout";
 "Drag controls, choose their actions and save a layout for each orientation." = "Drag controls, choose their actions and save a layout for each orientation.";
 "Physical Controllers" = "Physical Controllers";
 "Controller button bindings" = "Controller button bindings";
@@ -218,9 +218,16 @@
 
 "Control options" = "Control options";
 "Drag to move. Rotate the device to edit the other orientation." = "Drag to move. Rotate the device to edit the other orientation.";
+"Tap to select. Drag to move. Rotate to change layout." = "Tap to select. Drag to move. Rotate to change layout.";
 
 "Undo" = "Undo";
 "Redo" = "Redo";
 "Collapse tools" = "Collapse tools";
 "Expand tools" = "Expand tools";
 "Hidden" = "Hidden";
+
+// Individual touch control sizing (25% to 600%).
+"Smaller" = "Smaller";
+"Larger" = "Larger";
+"Reset to 100%" = "Reset to 100%";
+"Drag controls and set each button's size individually (25% to 600%). Save separate layouts for portrait and landscape." = "Drag controls and set each button's size individually (25% to 600%). Save separate layouts for portrait and landscape.";

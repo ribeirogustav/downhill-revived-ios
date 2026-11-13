@@ -35,7 +35,17 @@ def get_version():
         m = re.search(r'#define DHD_VERSION "([0-9.]+)"', version_h.read_text())
         if m:
             return m.group(1)
-    return "0.7.12"
+    return "0.7.16"
+
+
+def has_code_signature(executable: Path) -> bool:
+    env = {**os.environ, 'LC_ALL': 'C'}
+    result = subprocess.run(['codesign', '-d', str(executable)], capture_output=True, text=True, env=env)
+    if result.returncode == 0:
+        return True
+    if 'code object is not signed at all' in result.stderr:
+        return False
+    result.check_returncode()
 
 
 def run_privacy_audit(staged_app: Path):
@@ -73,12 +83,8 @@ def run_privacy_audit(staged_app: Path):
 
     # Check executable codesign status
     exe_path = staged_app / 'Downhill Revived'
-    if exe_path.is_file():
-        res = subprocess.run(['codesign', '-d', str(exe_path)], capture_output=True, text=True)
-        if res.returncode == 0:
-            violations.append(f"Executable still has code signature: {res.stdout.strip() or res.stderr.strip()}")
-        elif "code object is not signed at all" not in res.stderr and "code object is not signed at all" not in res.stdout:
-            print(f"audit: codesign check note: {res.stderr.strip()}")
+    if exe_path.is_file() and has_code_signature(exe_path):
+        violations.append("Executable still has a code signature.")
 
     if violations:
         print("audit: ERROR - Privacy audit failed with the following issues:")
@@ -89,7 +95,7 @@ def run_privacy_audit(staged_app: Path):
     print("audit: PASSED - 0 personal identifiers, 0 certificates, 0 machine paths found.")
 
 
-def package_unsigned_ipa(app_path: Path, out_ipa: Path = None) -> Path:
+def package_unsigned_ipa(app_path: Path, out_ipa: Path = None, *, update_canonical=True) -> Path:
     if not app_path.is_dir():
         raise FileNotFoundError(f"Application bundle not found at: {app_path}")
 
@@ -136,8 +142,9 @@ def package_unsigned_ipa(app_path: Path, out_ipa: Path = None) -> Path:
             subprocess.run(['strip', '-x', str(staged_exe)], check=True)
             print("package: stripped local debug symbols and build paths (strip -x).")
             # Remove Mach-O code signature slice
-            subprocess.run(['codesign', '--remove-signature', str(staged_exe)], check=True)
-            print("package: Mach-O code signature successfully stripped.")
+            if has_code_signature(staged_exe):
+                subprocess.run(['codesign', '--remove-signature', str(staged_exe)], check=True)
+                print("package: Mach-O code signature successfully stripped.")
 
         # Ensure permissions for all files
         for p in staged_app.rglob('*'):
@@ -178,7 +185,7 @@ def package_unsigned_ipa(app_path: Path, out_ipa: Path = None) -> Path:
 
         # Also create/update standard DownhillRevived.ipa in build/ios
         canonical_ipa = OUT / "DownhillRevived.ipa"
-        if canonical_ipa.resolve() != out_ipa.resolve():
+        if update_canonical and canonical_ipa.resolve() != out_ipa.resolve():
             shutil.copyfile(out_ipa, canonical_ipa)
 
     # Compute SHA-256 and size

@@ -168,7 +168,7 @@
 "Controller Stick Deadzone" = "Zone morte de la manette";
 
 "Customize Controls" = "Personnaliser les commandes";
-"Arrange and remap touch controls" = "Placer et réaffecter les commandes tactiles";
+"Arrange and remap touch controls" = "Modifier les commandes tactiles";
 "Drag controls, choose their actions and save a layout for each orientation." = "Déplacez les commandes, choisissez leurs actions et enregistrez une disposition par orientation.";
 "Physical Controllers" = "Manettes physiques";
 "Controller button bindings" = "Affectation des boutons de la manette";
@@ -218,9 +218,16 @@
 
 "Control options" = "Options de la commande";
 "Drag to move. Rotate the device to edit the other orientation." = "Faites glisser pour déplacer. Tournez l’appareil pour modifier l’autre orientation.";
+"Tap to select. Drag to move. Rotate to change layout." = "Touchez pour sélectionner. Faites glisser pour déplacer. Tournez l’appareil pour changer de disposition.";
 
 "Undo" = "Annuler la modification";
 "Redo" = "Rétablir";
 "Collapse tools" = "Réduire les outils";
 "Expand tools" = "Développer les outils";
 "Hidden" = "Masqué";
+
+// Individual touch control sizing (25% to 600%).
+"Smaller" = "Réduire";
+"Larger" = "Agrandir";
+"Reset to 100%" = "Rétablir à 100 %";
+"Drag controls and set each button's size individually (25% to 600%). Save separate layouts for portrait and landscape." = "Déplacez les commandes et réglez la taille de chaque bouton (25 % à 600 %). Enregistrez des dispositions distinctes en portrait et en paysage.";

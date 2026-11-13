@@ -74,11 +74,11 @@ struct TouchControlSurface: View {
 
     var body: some View {
         GeometryReader { geo in
-            let fit = orientation.fit(in: geo.size) * CGFloat(layout.baseScale)
+            let fit = orientation.fit(in: geo.size)
             ZStack {
                 ForEach(layout.controls) { placement in
                     if placement.visible || (editing && selected == placement.slot) {
-                        let size = placement.size(fit: fit)
+                        let size = placement.size(fit: fit, baseScale: layout.baseScale)
                         let position = controlPosition(placement, size: size, canvas: geo.size)
                         control(placement, size: size, canvas: geo.size)
                             .frame(width: size.width, height: size.height)
@@ -116,8 +116,8 @@ struct TouchControlSurface: View {
     }
 
     private func controlPosition(_ placement: TouchControlPlacement, size: CGSize, canvas: CGSize) -> CGPoint {
-        CGPoint(x: min(canvas.width - size.width / 2, max(size.width / 2, CGFloat(placement.x) * canvas.width)),
-                y: min(canvas.height - size.height / 2, max(size.height / 2, CGFloat(placement.y) * canvas.height)))
+        CGPoint(x: TouchControlPlacement.limitedCenter(CGFloat(placement.x) * canvas.width, item: size.width, canvas: canvas.width),
+                y: TouchControlPlacement.limitedCenter(CGFloat(placement.y) * canvas.height, item: size.height, canvas: canvas.height))
     }
 
     @ViewBuilder
@@ -127,7 +127,7 @@ struct TouchControlSurface: View {
                 .opacity(placement.visible ? 1 : 0.3)
                 .overlay {
                     if selected == placement.slot {
-                        RoundedRectangle(cornerRadius: 10).stroke(Color.orange, lineWidth: 3)
+                        RoundedRectangle(cornerRadius: 10).strokeBorder(.tint, lineWidth: 3)
                     }
                 }
                 .contentShape(Rectangle())
@@ -146,15 +146,17 @@ struct TouchControlSurface: View {
                             onSelect(placement.slot)
                         }
                         let origin = dragStart?.point ?? controlPosition(placement, size: size, canvas: canvas)
-                        let x = min(canvas.width - size.width / 2, max(size.width / 2, origin.x + value.translation.width))
-                        let y = min(canvas.height - size.height / 2, max(size.height / 2, origin.y + value.translation.height))
+                        let x = TouchControlPlacement.limitedCenter(origin.x + value.translation.width, item: size.width, canvas: canvas.width)
+                        let y = TouchControlPlacement.limitedCenter(origin.y + value.translation.height, item: size.height, canvas: canvas.height)
                         onMove(placement.slot, Double(x / max(1, canvas.width)), Double(y / max(1, canvas.height)))
                     }
                     .onEnded { _ in
                         draggingSlot = nil
                         onDragStateChange(false)
                     })
-                .accessibilityLabel(L10n.text(placement.slot.title))
+                .accessibilityLabel(L10n.text(placement.action.title))
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAddTraits(selected == placement.slot ? .isSelected : [])
         } else if placement.slot == .menu {
             Button { model.showInGameMenu = true } label: {
                 TouchControlArtwork(placement: placement, xbox: model.useXboxGlyphs)
@@ -198,7 +200,7 @@ struct TouchControlArtwork: View {
                         .stroke(color.opacity(0.85), lineWidth: 2))
                     .overlay {
                         Text(placement.action.glyph(xbox: xbox))
-                            .font(.system(size: min(20, geo.size.height * 0.40), weight: .black))
+                            .font(.system(size: min(30, geo.size.height * 0.40), weight: .black))
                             .foregroundStyle(color)
                             .lineLimit(1).minimumScaleFactor(0.45)
                     }
@@ -229,8 +231,8 @@ private struct TouchControlInput: View {
                 controlID: placement.slot == .stick ? nil : placement.action.inputID,
                 haptics: haptics,
                 onDown: { point, size in
-                    pressed = true
                     if placement.slot == .stick {
+                        pressed = true
                         updateStick(point, origin: floating ? point : CGPoint(x: size.width / 2, y: size.height / 2), size: size)
                     }
                 },
@@ -255,8 +257,9 @@ private struct TouchControlInput: View {
         let radius = max(1, min(size.width, size.height) * 0.35)
         let dx = point.x - origin.x, dy = point.y - origin.y
         touch_input_set_stick(Float(dx / radius), Float(dy / radius))
-        let distance = hypot(dx, dy)
-        let gain = distance > radius ? radius / distance : 1
-        offset = CGSize(width: dx * gain, height: dy * gain)
+        var filteredX: Float = 0
+        var filteredY: Float = 0
+        touch_input_get_stick(&filteredX, &filteredY)
+        offset = CGSize(width: CGFloat(filteredX) * radius, height: CGFloat(filteredY) * radius)
     }
 }

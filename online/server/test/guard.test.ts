@@ -126,8 +126,8 @@ describe("kill switch", () => {
     // Race frames go over the SFU (finding 158); the room keeps answering the race's pings and
     // keeps its race.
     for (const c of clients) {
-      c.ws.send(new Uint8Array([FRAME_PING, 0, 7]).buffer);
-      expect([...(await c.binary())]).toEqual([FRAME_PONG, clients.indexOf(c), 7]);
+      c.ws.send(new Uint8Array([FRAME_PING, clients.indexOf(c), 7]).buffer);
+      expect([...(await c.binary()).slice(0, 3)]).toEqual([FRAME_PONG, clients.indexOf(c), 7]);
     }
     const race = await runInDurableObject(env.ROOM.get(env.ROOM.idFromName(code)), (room: any) => room.state?.race?.startAt);
     expect(race).toBeTypeOf("number");
@@ -222,20 +222,26 @@ describe("limits per connection source", () => {
   }
 
   it("refuses an address that makes too many rooms in a minute, not another address", async () => {
-    const ip = randomIp();
     let refused: { error: any; code: number } | null = null;
     let made = 0;
-    for (let i = 0; i < 15 && !refused; i++) {
-      const res = await upgrade("/v1/rooms/new", ip);
-      // a room's socket waits for hello; a refusal closes at once
-      const c = new Client(res.webSocket!);
-      res.webSocket!.accept();
-      c.hello(`P${i}`);
-      try {
-        await c.json("welcome");
-        made++;
-      } catch {
-        refused = { error: null, code: c.closeCode! };
+    // The rate limiter counts in fixed one-minute windows: a run that crosses a window's end sees
+    // the count start over (more than 10 made, a flaky failure). That can happen once a minute, so a second
+    // try with a fresh address never crosses one too.
+    for (let attempt = 0; attempt < 2 && made !== 10; attempt++) {
+      const ip = randomIp();
+      made = 0, refused = null;
+      for (let i = 0; i < 15 && !refused; i++) {
+        const res = await upgrade("/v1/rooms/new", ip);
+        // a room's socket waits for hello; a refusal closes at once
+        const c = new Client(res.webSocket!);
+        res.webSocket!.accept();
+        c.hello(`P${i}`);
+        try {
+          await c.json("welcome");
+          made++;
+        } catch {
+          refused = { error: null, code: c.closeCode! };
+        }
       }
     }
     expect(made).toBe(10); // wrangler.jsonc RL_CREATE

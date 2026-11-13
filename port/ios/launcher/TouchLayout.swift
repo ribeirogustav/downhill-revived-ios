@@ -1,6 +1,21 @@
 // Persistent, orientation-specific touch layouts. GPL-3.0-or-later.
 import Foundation
 import CoreGraphics
+#if canImport(UIKit)
+import UIKit
+#endif
+
+// Device-specific presets are selected only at the configuration boundary.
+// Explicit pad: accessors keep the model testable without UIKit.
+enum TouchLayoutDevice {
+    static var isPad: Bool {
+        #if canImport(UIKit)
+        UIDevice.current.userInterfaceIdiom == .pad
+        #else
+        false
+        #endif
+    }
+}
 
 enum TouchLayoutOrientation: String, Codable, CaseIterable, Identifiable, Hashable {
     case portrait, landscape
@@ -42,13 +57,28 @@ struct TouchControlPlacement: Codable, Identifiable, Equatable {
     var slot: TouchLayoutSlot
     var x: Double
     var y: Double
+    // Each slot owns its own scale, saved separately for portrait and landscape.
+    // 1.0 = 100% of the chosen device preset, 6.0 = 600%.
+    static let minimumScale = 0.25
+    static let maximumScale = 6.0
     var scale: Double = 1
     var visible: Bool = true
     var action: TouchLayoutSlot
     var id: TouchLayoutSlot { slot }
 
-    func size(fit: CGFloat) -> CGSize {
-        let factor = CGFloat(scale) * fit
+    // Keep the visible part movable even when a 600% button exceeds the viewport.
+    static func limitedCenter(_ requested: CGFloat, item: CGFloat, canvas: CGFloat) -> CGFloat {
+        let margin = item <= canvas ? item / 2 : 0
+        return min(canvas - margin, max(margin, requested))
+    }
+
+    func size(fit: CGFloat, baseScale: Double = 1) -> CGSize {
+        // The editor scale is independent for each button. 100% uses the
+        // device preset (which intentionally has a larger baseline on iPad).
+        // Keep migrated baseScale, but never let invalid values reach CoreGraphics.
+        let individual = scale.isFinite ? min(Self.maximumScale, max(Self.minimumScale, scale)) : 1
+        let baseline = baseScale.isFinite ? min(2, max(0.1, baseScale)) : 1
+        let factor = CGFloat(individual * baseline) * fit
         switch slot {
         case .stick: return CGSize(width: 130 * factor, height: 130 * factor)
         case .l1, .l2, .r1, .r2: return CGSize(width: 66 * factor, height: 38 * factor)
@@ -99,6 +129,35 @@ struct TouchLayout: Codable, Equatable {
         }, coordinateSpace: .screen)
     }
 
+    // Default grip zones for iPad screens in points. Unlike the phone preset,
+    // action buttons are spaced around both hands with more room for the larger
+    // thumb pad; menu/pause actions stay outside the main face-button cluster.
+    static func ipadDefaults(_ orientation: TouchLayoutOrientation) -> TouchLayout {
+        let positions: [(TouchLayoutSlot, Double, Double)] = orientation == .portrait ? [
+            (.stick, 0.17, 0.81),
+            (.cross, 0.81, 0.82), (.circle, 0.91, 0.74),
+            (.square, 0.71, 0.74), (.triangle, 0.81, 0.66),
+            (.l2, 0.11, 0.54), (.l1, 0.11, 0.44),
+            (.r1, 0.89, 0.44), (.r2, 0.89, 0.54),
+            (.select, 0.40, 0.94), (.start, 0.60, 0.94),
+            (.l3, 0.32, 0.84), (.r3, 0.66, 0.84),
+            (.menu, 0.50, 0.08)
+        ] : [
+            (.stick, 0.16, 0.75),
+            (.cross, 0.83, 0.82), (.circle, 0.91, 0.71),
+            (.square, 0.75, 0.71), (.triangle, 0.83, 0.60),
+            (.l2, 0.10, 0.54), (.l1, 0.10, 0.37),
+            (.r1, 0.91, 0.35), (.r2, 0.91, 0.49),
+            (.select, 0.34, 0.09), (.start, 0.66, 0.09),
+            (.l3, 0.32, 0.79), (.r3, 0.68, 0.78),
+            (.menu, 0.50, 0.09)
+        ]
+        return TouchLayout(controls: positions.map { slot, x, y in
+            TouchControlPlacement(slot: slot, x: x, y: y,
+                                  visible: slot != .l3 && slot != .r3, action: slot)
+        }, coordinateSpace: .screen, baseScale: 1.25)
+    }
+
     static func legacyDefaults(_ orientation: TouchLayoutOrientation) -> TouchLayout {
         let portrait = orientation == .portrait
         let positions: [(TouchLayoutSlot, Double, Double)] = portrait ? [
@@ -139,8 +198,9 @@ struct TouchLayout: Codable, Equatable {
         }
     }
 
-    func sanitized(_ orientation: TouchLayoutOrientation) -> TouchLayout {
-        var result = coordinateSpace == .legacy ? Self.legacyDefaults(orientation) : Self.defaults(orientation)
+    func sanitized(_ orientation: TouchLayoutOrientation, pad: Bool = false) -> TouchLayout {
+        var result = coordinateSpace == .legacy ? Self.legacyDefaults(orientation) :
+            (pad ? Self.ipadDefaults(orientation) : Self.defaults(orientation))
         result.baseScale = baseScale.isFinite ? min(2, max(0.1, baseScale)) : 1
         for index in result.controls.indices {
             let fallback = result.controls[index]
@@ -149,7 +209,7 @@ struct TouchLayout: Codable, Equatable {
                 slot: fallback.slot,
                 x: saved.x.isFinite ? min(1, max(0, saved.x)) : fallback.x,
                 y: saved.y.isFinite ? min(1, max(0, saved.y)) : fallback.y,
-                scale: saved.scale.isFinite ? min(1.5, max(0.6, saved.scale)) : 1,
+                scale: saved.scale.isFinite ? min(TouchControlPlacement.maximumScale, max(TouchControlPlacement.minimumScale, saved.scale)) : 1,
                 visible: saved.visible, action: fallback.slot.isButton && saved.action.isButton ? saved.action : fallback.action
             )
         }
@@ -168,16 +228,58 @@ struct TouchLayout: Codable, Equatable {
 }
 
 struct TouchLayoutConfiguration: Codable, Equatable {
+    // Keep the v2 document readable. New device-specific keys are optional on
+    // decode, so users upgrading from an older v2 layout never lose their work.
     var version = 2
     var portrait = TouchLayout.defaults(.portrait)
     var landscape = TouchLayout.defaults(.landscape)
+    var ipadPortrait = TouchLayout.ipadDefaults(.portrait)
+    var ipadLandscape = TouchLayout.ipadDefaults(.landscape)
+
+    init() {}
+
+    private enum CodingKeys: String, CodingKey {
+        case version, portrait, landscape, ipadPortrait, ipadLandscape
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        version = try values.decodeIfPresent(Int.self, forKey: .version) ?? 2
+        portrait = try values.decode(TouchLayout.self, forKey: .portrait)
+        landscape = try values.decode(TouchLayout.self, forKey: .landscape)
+        ipadPortrait = try values.decodeIfPresent(TouchLayout.self, forKey: .ipadPortrait) ??
+            Self.padFallback(previous: portrait, orientation: .portrait, isPad: TouchLayoutDevice.isPad)
+        ipadLandscape = try values.decodeIfPresent(TouchLayout.self, forKey: .ipadLandscape) ??
+            Self.padFallback(previous: landscape, orientation: .landscape, isPad: TouchLayoutDevice.isPad)
+    }
+
+    // On an iPad upgrading from an older two-layout file, preserve layouts the
+    // person actually edited. Untouched defaults get the new iPad grip preset.
+    static func padFallback(previous: TouchLayout, orientation: TouchLayoutOrientation,
+                            isPad: Bool) -> TouchLayout {
+        if isPad && previous != TouchLayout.defaults(orientation) { return previous }
+        return TouchLayout.ipadDefaults(orientation)
+    }
+
+    subscript(_ orientation: TouchLayoutOrientation, pad isPad: Bool) -> TouchLayout {
+        get {
+            if isPad { return orientation == .portrait ? ipadPortrait : ipadLandscape }
+            return orientation == .portrait ? portrait : landscape
+        }
+        set {
+            if isPad {
+                if orientation == .portrait { ipadPortrait = newValue }
+                else { ipadLandscape = newValue }
+            } else {
+                if orientation == .portrait { portrait = newValue }
+                else { landscape = newValue }
+            }
+        }
+    }
 
     subscript(_ orientation: TouchLayoutOrientation) -> TouchLayout {
-        get { orientation == .portrait ? portrait : landscape }
-        set {
-            if orientation == .portrait { portrait = newValue }
-            else { landscape = newValue }
-        }
+        get { self[orientation, pad: TouchLayoutDevice.isPad] }
+        set { self[orientation, pad: TouchLayoutDevice.isPad] = newValue }
     }
 }
 
@@ -271,9 +373,11 @@ struct TouchLayoutViewport: Equatable {
         result.baseScale *= Double(oldFit / newFit)
         for index in result.controls.indices {
             let control = layout.controls[index]
-            let bounds = control.size(fit: oldFit * CGFloat(layout.baseScale))
-            let x = min(old.width - bounds.width / 2, max(bounds.width / 2, CGFloat(control.x) * old.width))
-            let y = min(old.height - bounds.height / 2, max(bounds.height / 2, CGFloat(control.y) * old.height))
+            let bounds = control.size(fit: oldFit, baseScale: layout.baseScale)
+            let x = TouchControlPlacement.limitedCenter(CGFloat(control.x) * old.width,
+                                                        item: bounds.width, canvas: old.width)
+            let y = TouchControlPlacement.limitedCenter(CGFloat(control.y) * old.height,
+                                                        item: bounds.height, canvas: old.height)
             result.controls[index].x = Double(min(1, max(0, (old.minX + x - current.minX) / current.width)))
             result.controls[index].y = Double(min(1, max(0, (old.minY + y - current.minY) / current.height)))
         }

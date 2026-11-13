@@ -6,11 +6,14 @@
   "compatibility_date": "2026-10-01",
   "upload_source_maps": true,
   "observability": { "enabled": true },
+  // The Worker's own version (id, upload time): the Worker passes it to its rooms, which restart
+  // for new code only at a safe moment (src/rollout.ts, finding 184).
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
   // The oldest game release that may play online ("X.Y.Z"). Older clients are refused with
   // "A new version is available. Update to play online." Raise it to each new release once that
   // release is published; a self-hosted server can keep an older one. (The kill switch is not a
   // variable: it is in the moderation store, `node tools/moderate.mjs online off`, finding 161.)
-  "vars": { "MIN_VERSION": "0.7.12" },
+  "vars": { "MIN_VERSION": "0.7.13" },
   // The official server's address (port/hle/host.c OFFICIAL_SERVER).
   "routes": [{ "pattern": "dhd.skuza.app", "custom_domain": true }],
   // Limits per connection source (src/guard.ts overLimit, finding 161), keyed by the address's
@@ -35,8 +38,16 @@
     "bindings": [
       { "name": "ROOM", "class_name": "Room" },
       { "name": "LOBBIES", "class_name": "LobbyIndex" }
-    ]
+    ],
+    // A busy room never hibernates, so it adopts new code when it restarts itself between races
+    // (src/rollout.ts, finding 184); 24 h is only the limit after which Cloudflare resets it
+    // anyway. tools/deploy.mjs --emergency overrides it with immediate updates.
+    "code_update_strategy": { "mode": "deferred", "max_delay": 86400 }
   },
+  // The official server's main Worker, deployed by tools/deploy.mjs with `wrangler versions upload`,
+  // which Cloudflare refuses for a version that creates a Durable Object class: no new class here
+  // without a plain `wrangler deploy` first. P2P rooms are Rooms too, with another race transport
+  // (src/room.ts, finding 186): no class of their own.
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["Room", "LobbyIndex"] }
   ]

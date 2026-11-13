@@ -12,17 +12,20 @@ final class TouchLayoutStore: ObservableObject {
         let previousURL = directory.appendingPathComponent("touch_layouts_v1.json")
         let isDefaultDocDir = (directory == FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0])
         let defaults = UserDefaults.standard
-        if isDefaultDocDir && defaults.integer(forKey: "DHD_TOUCH_LAYOUT_REVISION") < 2 {
-            configuration = TouchLayoutConfiguration()
-            try? save(configuration)
-            defaults.set(2, forKey: "DHD_TOUCH_LAYOUT_REVISION")
-        } else if var saved = Self.read(fileURL, version: 2) ?? Self.read(previousURL, version: 1) {
+        // Always read an existing layout before consulting revision metadata.
+        // Earlier builds could reset valid v2 layouts when this preference was absent.
+        if var saved = Self.read(fileURL, version: 2) ?? Self.read(previousURL, version: 1) {
             saved.version = 2
             saved.portrait = saved.portrait.sanitized(.portrait)
             saved.landscape = saved.landscape.sanitized(.landscape)
+            saved.ipadPortrait = saved.ipadPortrait.sanitized(.portrait, pad: true)
+            saved.ipadLandscape = saved.ipadLandscape.sanitized(.landscape, pad: true)
             configuration = saved
         } else {
             migrateLegacyLayout(directory.appendingPathComponent("touch_controls_layout.json"))
+        }
+        if isDefaultDocDir && defaults.integer(forKey: "DHD_TOUCH_LAYOUT_REVISION") < 2 {
+            defaults.set(2, forKey: "DHD_TOUCH_LAYOUT_REVISION")
         }
     }
 
@@ -34,13 +37,16 @@ final class TouchLayoutStore: ObservableObject {
     }
 
     func save(_ draft: TouchLayoutConfiguration) throws {
-        guard draft.portrait.hasEssentialControls && draft.landscape.hasEssentialControls else {
+        guard draft.portrait.hasEssentialControls && draft.landscape.hasEssentialControls &&
+              draft.ipadPortrait.hasEssentialControls && draft.ipadLandscape.hasEssentialControls else {
             throw LayoutError.missingControls
         }
         var checked = draft
         checked.version = 2
         checked.portrait = draft.portrait.sanitized(.portrait)
         checked.landscape = draft.landscape.sanitized(.landscape)
+        checked.ipadPortrait = draft.ipadPortrait.sanitized(.portrait, pad: true)
+        checked.ipadLandscape = draft.ipadLandscape.sanitized(.landscape, pad: true)
         let data = try JSONEncoder().encode(checked)
         try data.write(to: fileURL, options: .atomic)
         touch_input_reset()

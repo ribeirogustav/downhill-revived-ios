@@ -39,13 +39,216 @@ use crate::device::Gpu;
 use crate::native::arenas::Arenas;
 use crate::native::convert::{ConvertObjects, ConvertSource};
 use crate::native::scanout::ScanoutObjects;
-use crate::native::pipelines::{gputimes, SPEC_SHIFT, TEXELS, TEXEL_SCALE_SHIFT, VARIANT_ALPHA_ONLY, VARIANT_DUAL, VARIANT_PLAIN, VARIANT_RGB_A128};
+use crate::native::pipelines::{gputimes, without_kept_colour, MESH, MESH_TWO_SIDED, SPEC_SHIFT, TEXELS, TEXEL_SCALE_SHIFT, VARIANT_ALPHA_ONLY, VARIANT_DUAL, VARIANT_PLAIN, VARIANT_RGB_A128};
 use crate::native::shared::NativeShared;
 use crate::native::surfaces::Kit;
 use crate::native::{Native, Picture};
 use std::collections::HashSet;
 #[path = "gpu_timing.rs"]
 mod gpu_timing;
+
+/// A picture's first encoder finished off the render thread (finding 195).
+///
+/// wgpu replays an encoder's recorded passes into the backend's commands inside `finish`, on the
+/// calling thread and under a read lock only; on a phone that replay is the largest part of a race
+/// picture (5.7 of the render thread's 13 ms at the race start on the throttled Mi 11i, on a little
+/// core). So a large picture is recorded into two encoders (`cut_point`): the first is handed to
+/// this helper thread, which finishes it while the render thread records, uploads and finishes the
+/// second, and the picture's submit gives the queue both, in order. The cut is made where a pass
+/// ends and another begins, so the GPU runs the same passes. Not in the browser, which has no
+/// threads: one encoder there.
+#[cfg(not(target_arch = "wasm32"))]
+mod finisher {
+    use std::sync::mpsc::{channel, Receiver, Sender};
+
+    struct Helper {
+        jobs: Sender<(wgpu::CommandEncoder, cores::Mask)>,
+        done: Receiver<wgpu::CommandBuffer>,
+    }
+
+    /// The helper thread (made at the first cut) and the encoders it holds.
+    #[derive(Default)]
+    pub struct Finisher {
+        helper: Option<Helper>,
+        /// The thread could not be made (said once): pictures stay in one encoder.
+        failed: bool,
+        pending: usize,
+    }
+
+    impl Finisher {
+        /// Encoders handed over and not taken back yet.
+        pub fn pending(&self) -> usize {
+            self.pending
+        }
+
+        /// Hands `encoder` to the helper thread to finish; gives it back when there is no helper.
+        pub fn send(&mut self, encoder: wgpu::CommandEncoder) -> Result<(), wgpu::CommandEncoder> {
+            if self.helper.is_none() && !self.failed {
+                self.helper = Helper::start();
+                self.failed = self.helper.is_none();
+            }
+            let Some(helper) = self.helper.as_ref() else { return Err(encoder) };
+            match helper.jobs.send((encoder, cores::mine())) {
+                Ok(()) => {
+                    self.pending += 1;
+                    Ok(())
+                }
+                Err(back) => {
+                    self.helper = None;
+                    self.failed = true;
+                    Err(back.0 .0)
+                }
+            }
+        }
+
+        /// The command buffers of the encoders handed over since the last call, in that order
+        /// (waits for the helper), followed by `last`.
+        pub fn take(&mut self, last: wgpu::CommandBuffer) -> Vec<wgpu::CommandBuffer> {
+            let mut all = Vec::with_capacity(self.pending + 1);
+            for _ in 0..self.pending {
+                match self.helper.as_ref().map(|h| h.done.recv()) {
+                    Some(Ok(commands)) => all.push(commands),
+                    // its commands are part of the picture: never carry on without them
+                    _ => crate::guard::fatal("dhd_render: the encoder thread ended while it held a picture's encoder"),
+                }
+            }
+            self.pending = 0;
+            all.push(last);
+            all
+        }
+    }
+
+    impl Helper {
+        fn start() -> Option<Helper> {
+            let (jobs, inbox) = channel::<(wgpu::CommandEncoder, cores::Mask)>();
+            let (outbox, done) = channel();
+            let spawned = std::thread::Builder::new().name("dhd-encode".into()).spawn(move || {
+                let mut placed = cores::Mask::default();
+                // Ends when the Finisher (the sender) is dropped.
+                while let Ok((encoder, mask)) = inbox.recv() {
+                    cores::follow(&mask, &mut placed);
+                    if outbox.send(encoder.finish()).is_err() {
+                        break;
+                    }
+                }
+            });
+            match spawned {
+                Ok(_) => Some(Helper { jobs, done }),
+                Err(e) => {
+                    crate::host::log(&format!("gs native: no encoder thread ({e}); a picture stays in one encoder"));
+                    None
+                }
+            }
+        }
+    }
+
+    /// The helper runs on the cores the render thread is allowed on. On Android the host keeps the
+    /// render thread off a phone's one or two big cores, which the game and VU threads need (finding
+    /// 149, android_perf.c), and places it again every few fields; the helper has no name there, so
+    /// each encoder comes with the render thread's mask and the helper takes it when it changed.
+    #[cfg(target_os = "android")]
+    mod cores {
+        /// A cpu_set_t (1024 CPUs).
+        pub type Mask = [u64; 16];
+
+        extern "C" {
+            fn sched_getaffinity(pid: i32, size: usize, mask: *mut u64) -> i32;
+            fn sched_setaffinity(pid: i32, size: usize, mask: *const u64) -> i32;
+        }
+
+        /// The calling thread's allowed cores (all zero when the system does not say).
+        pub fn mine() -> Mask {
+            let mut mask = Mask::default();
+            // SAFETY: the mask is `size` writable bytes; pid 0 is the calling thread.
+            if unsafe { sched_getaffinity(0, std::mem::size_of::<Mask>(), mask.as_mut_ptr()) } != 0 {
+                mask = Mask::default();
+            }
+            mask
+        }
+
+        /// Puts the calling thread on `mask`'s cores when that is not where it was put last.
+        pub fn follow(mask: &Mask, placed: &mut Mask) {
+            if mask != placed && mask.iter().any(|&w| w != 0) {
+                // SAFETY: the mask is `size` readable bytes; pid 0 is the calling thread.
+                unsafe { sched_setaffinity(0, std::mem::size_of::<Mask>(), mask.as_ptr()) };
+                *placed = *mask;
+            }
+        }
+    }
+
+    /// Elsewhere no thread is placed: nothing to follow.
+    #[cfg(not(target_os = "android"))]
+    mod cores {
+        #[derive(Clone, Copy, Default)]
+        pub struct Mask;
+        pub fn mine() -> Mask {
+            Mask
+        }
+        pub fn follow(_mask: &Mask, _placed: &mut Mask) {}
+    }
+}
+
+/// What a command adds to its encoder's work, in draw commands (finding 195): one for a draw, and
+/// `PASS_DRAWS` more when a pass ends and another begins with it (a draw into another target or Z
+/// surface than the draw before it; a transfer). `last`: the draw pass open before the command.
+/// An estimate from the commands alone: it places the cut, nothing else.
+fn encode_work(k: &DhdrCommand, last: &mut Option<(i32, i32)>) -> usize {
+    /// A pass's begin and end, in draws. A race picture is one scene pass of 300 to 400 draws, then
+    /// some thirty short passes with 50 draws between them, and finishing those takes wgpu and the
+    /// driver longer than the scene: on Direct3D 12 twice as long; on the throttled Mi 11i (Vulkan)
+    /// weights of 5, 12 and 27 were timed, and 27 gave the two parts the same time mid-race (2.7
+    /// and 2.8 ms) and the most fields a second in every scene.
+    const PASS_DRAWS: usize = 27;
+    if k.kind != DHDR_CMD_DRAW {
+        *last = None;
+        return PASS_DRAWS;
+    }
+    if k.count == 0 {
+        return 0;
+    }
+    let pass = Some((k.target as i32, k.depth as i32));
+    let begins = *last != pass;
+    *last = pass;
+    1 + if begins { PASS_DRAWS } else { 0 }
+}
+
+/// The work (`encode_work`) after which a picture of `draws` draw commands and `work` in all is cut
+/// (`Pass::cut`) at the next pass that begins: `DHD_ENCODE_CUT` percent of it, 60 unless set (the
+/// helper starts when the render thread is still recording, so the larger part is its; 0: never,
+/// for a comparison). Only where a pass ends anyway: a cut inside the scene pass adds a pass (the
+/// target stored and loaded again: 0.3 to 0.5 ms more of GPU a frame on the Mi 11i) and left the
+/// helper a third of the work. None: not cut (a small picture, 0, the browser); a picture without
+/// such a boundary stays in one encoder.
+///
+/// Not on Arm's Mali GPUs unless `DHD_ENCODE_CUT` asks (finding 198): the Redmi 9's Mali-G52 (driver
+/// r26p0) loses its device within the first minute of every start whose pictures are cut (at the
+/// title or entering the Bike Shop; five of five full routes, none with one encoder), and no other
+/// Mali has run the cut.
+fn cut_point(draws: usize, work: usize, vendor: u32) -> Option<usize> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        /// A picture of fewer draw commands than this stays in one encoder: handing a part over
+        /// costs a wake-up, and the menus' pictures are finished in well under a millisecond.
+        const CUT_MIN_DRAWS: usize = 96;
+        thread_local! {
+            static ASKED: Option<usize> = std::env::var("DHD_ENCODE_CUT").ok().and_then(|v| v.trim().parse().ok())
+                .map(|v: usize| v.min(95));
+        }
+        let asked = ASKED.with(|p| *p);
+        let mali = vendor == crate::device::VENDOR_ARM;
+        if mali && asked.is_none() {
+            static SAID: std::sync::Once = std::sync::Once::new();
+            SAID.call_once(|| crate::host::log("gs native: a picture stays in one encoder on this GPU (Mali)"));
+        }
+        let percent = asked.unwrap_or(if mali { 0 } else { 60 });
+        (percent != 0 && draws >= CUT_MIN_DRAWS).then(|| work * percent / 100)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (draws, work, vendor);
+        None
+    }
+}
 
 /// D3D11's SRC_ALPHA and INV_SRC_ALPHA (native_core.inc's BLEND_SA, BLEND_ISA).
 const BLEND_SA: u32 = 5;
@@ -58,6 +261,9 @@ const BLEND_INV_FACTOR: u32 = 15;
 /// commands, and the picture's counts.
 pub struct Pass {
     encoder: Option<wgpu::CommandEncoder>,
+    /// The picture's encoder cut off earlier, being finished on the helper thread (`cut`).
+    #[cfg(not(target_arch = "wasm32"))]
+    finisher: finisher::Finisher,
     /// Diagnostic batching: present (or zread_take when skipped) submits the picture.
     pub deferred: bool,
     timing: gpu_timing::Timing,
@@ -77,9 +283,9 @@ pub struct Pass {
     /// call is a call out to JavaScript; the blend constant builds a JS object). WebGPU keeps
     /// all of these for the rest of the pass, across pipeline changes. Cleared with the pass.
     state: PassState,
-    /// The picture's last draw constants and their offset in the constants arena: a draw with
-    /// the same bytes binds that offset again instead of a new copy (the arena is written once,
-    /// at the submit, and nothing in it is overwritten during the picture).
+    /// The picture's last draw constants and their offset in the draw constants arena: a draw with
+    /// the same bytes binds that offset again instead of a new copy (the arena is written once, at
+    /// the submit, and nothing in it is overwritten during the picture).
     constants: Option<(DhdrNativeConstants, u32)>,
     /// A draw not issued yet (first vertex, count, its DHD_GPU_STATS kind): see `draw`.
     pending: Option<(u32, u32, u32)>,
@@ -100,16 +306,51 @@ struct PassState {
     scissor: Option<[u32; 4]>,
     /// The blend constant's GS value (blend_fix: all four channels are blend_fix / 128).
     blend: Option<u32>,
-    /// Group 0's dynamic offset (the group is the picture's constants arena group).
+    /// Group 0's dynamic offset (the group is the draw constants arena's: arenas.rs `draw_group`).
     offset: Option<u32>,
     /// Group 1, the draw's texture.
     group: Option<wgpu::BindGroup>,
+    /// The union of the pass's draws' scissors (left, top, right, bottom) and its draw commands
+    /// (DHD_PASS_TRACE).
+    area: Option<[u32; 4]>,
+    draws: u32,
+    /// The union of the draws' vertex bounds inside their scissors, and the draws with a Z surface
+    /// (DHD_PASS_TRACE only).
+    bounds: Option<[u32; 4]>,
+    zdraws: u32,
+    /// The surfaces the pass's draws read (as textures, or through conversions), one bit each.
+    reads: u64,
+    /// Group 2, the mesh draws' object records (set once a pass, at its first mesh draw).
+    mesh: bool,
+}
+
+/// The pixels draw `first..first + count` of `vertices` (through `indices` when given) can touch: its
+/// vertices' bounding box at `scale`, one pixel wider, cut to the scissor (left, top, width, height);
+/// left, top, right, bottom. DHD_PASS_TRACE.
+fn draw_bounds(vertices: &[DhdrVertex], indices: Option<&[u32]>, first: u32, count: u32, scale: u32,
+               scissor: [u32; 4]) -> Option<[u32; 4]> {
+    let (mut l, mut t, mut r, mut b) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    for i in first..first.saturating_add(count) {
+        let v = match indices {
+            Some(ix) => ix.get(i as usize).and_then(|&j| vertices.get(j as usize)),
+            None => vertices.get(i as usize),
+        }?;
+        l = l.min(v.x); t = t.min(v.y); r = r.max(v.x); b = b.max(v.y);
+    }
+    let s = scale as f32;
+    let clip = |v: f32, lo: u32, hi: u32| (v.max(lo as f32).min(hi as f32)) as u32;
+    let [x, y, w, h] = scissor;
+    let (l, t) = (clip((l * s).floor() - 1.0, x, x + w), clip((t * s).floor() - 1.0, y, y + h));
+    let (r, b) = (clip((r * s).ceil() + 1.0, x, x + w), clip((b * s).ceil() + 1.0, y, y + h));
+    (r > l && b > t).then_some([l, t, r, b])
 }
 
 impl Pass {
     pub fn new() -> Pass {
         Pass {
             encoder: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            finisher: finisher::Finisher::default(),
             deferred: crate::native::zread::switch("DHD_GPU_OVERLAP")
                 && crate::native::zread::folded(),
             pass: None,
@@ -137,7 +378,13 @@ impl Pass {
     fn end_reason(&mut self, reason: &str) {
         self.flush();
         if let Some(pass) = self.pass.take() {
-            pass_trace::event(reason, self.target, self.depth);
+            if pass_trace::on() {
+                let [l, t, r, b] = self.state.area.unwrap_or([0; 4]);
+                let [bl, bt, br, bb] = self.state.bounds.unwrap_or([0; 4]);
+                pass_trace::event(&format!("{reason} area={l},{t},{}x{} bounds={bl},{bt},{}x{} draws={} zdraws={} reads={:x}",
+                                           r - l, b - t, br - bl, bb - bt, self.state.draws, self.state.zdraws,
+                                           self.state.reads), self.target, self.depth);
+            }
             drop(pass);
             self.target = -2;
             self.depth = -2;
@@ -146,15 +393,16 @@ impl Pass {
         }
     }
 
-    /// The constants' offset in the arena: the last draw's when the bytes are the same, else a
-    /// new copy (`Arenas::constants`).
+    /// The constants' offset in the draw constants arena: the last draw's when the bytes are the
+    /// same, else a new copy (`Arenas::draw_constants`).
     fn constants(&mut self, arenas: &mut Arenas, c: &DhdrNativeConstants) -> u32 {
         if let Some((last, offset)) = &self.constants {
             if constant_bytes(last) == constant_bytes(c) {
                 return *offset;
             }
         }
-        let offset = arenas.constants(constant_bytes(c));
+        let offset = arenas.draw_constants(constant_bytes(c));
+        rstat::tally(rstat::COPIES, 1);
         self.constants = Some((*c, offset));
         offset
     }
@@ -195,11 +443,25 @@ impl Pass {
         let s = &mut self.state;
         if s.offset != Some(offset) {
             pass.set_bind_group(0, uniforms, &[offset]);
+            rstat::tally(rstat::BIND0, 1);
             s.offset = Some(offset);
         }
         if s.group.as_ref() != Some(group) {
             pass.set_bind_group(1, group, &[]);
+            rstat::tally(rstat::BIND1, 1);
             s.group = Some(group.clone());
+        }
+    }
+
+    /// Group 2 (the mesh records, `Views::mesh`) in the open pass, set at its first mesh draw.
+    fn set_mesh_group(&mut self, mesh: &wgpu::BindGroup) {
+        if self.state.mesh {
+            return;
+        }
+        self.flush();
+        if let Some(pass) = self.pass.as_mut() {
+            pass.set_bind_group(2, mesh, &[]);
+            self.state.mesh = true;
         }
     }
 
@@ -225,10 +487,11 @@ impl Pass {
 
     /// native_begin_pass (once `open_on` said no): a pass into `color` (and `z`), loading and
     /// storing both, with the whole vertex buffer at slot 0 (and in an indexed picture the whole
-    /// index buffer).
+    /// index buffer). `size`: the attachments' size (DHD_PASS_TRACE).
     #[allow(clippy::too_many_arguments)]
-    fn begin(&mut self, gpu: &Gpu, target: i32, depth: i32, color: &wgpu::TextureView, z: Option<&wgpu::TextureView>,
-             vertices: &wgpu::Buffer, vertex_bytes: u64, indices: Option<&(wgpu::Buffer, u64)>) {
+    fn begin(&mut self, gpu: &Gpu, target: i32, depth: i32, size: [u32; 2], color: &wgpu::TextureView,
+             z: Option<&wgpu::TextureView>, vertices: &wgpu::Buffer, vertex_bytes: u64,
+             indices: Option<&(wgpu::Buffer, u64)>) {
         self.end_reason(if self.target != target { "target-change" } else { "depth-change" });
         let keep = wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store };
         let times = gputimes::slot(gpu, gputimes::DRAW);
@@ -263,7 +526,9 @@ impl Pass {
         rstat::pass();
         #[cfg(not(target_arch = "wasm32"))]
         self.stats.pass();
-        pass_trace::event("draw-begin:load/store", target, depth);
+        if pass_trace::on() {
+            pass_trace::event(&format!("draw-begin:load/store {}x{}", size[0], size[1]), target, depth);
+        }
     }
 
     /// native_set_pipeline in the open pass: false (reported once per key) when the key has no
@@ -280,6 +545,7 @@ impl Pass {
                 self.flush();
                 if let Some(pass) = self.pass.as_mut() {
                     pass.set_pipeline(pipe);
+                    rstat::tally(rstat::PIPES, 1);
                     #[cfg(not(target_arch = "wasm32"))]
                     crate::native::pipelines::pipelog::bind(key as u32);
                     #[cfg(not(target_arch = "wasm32"))]
@@ -291,6 +557,10 @@ impl Pass {
             Err(e) => {
                 if self.failed.insert(key) {
                     crate::host::log(&format!("gs native: draw pipeline {key:X}: {e}"));
+                }
+                // a mesh pipeline the driver refuses: Native VU off for the session (finding 194)
+                if key as u32 & MESH != 0 {
+                    crate::native::init::refuse_meshes(Some("a mesh draw pipeline was refused"));
                 }
                 false
             }
@@ -325,6 +595,7 @@ impl Pass {
             if let Some(pass) = self.pass.as_mut() {
                 #[cfg(not(target_arch = "wasm32"))]
                 let q = self.stats.draw_begin(pass, _class);
+                rstat::tally(rstat::DRAWS, 1);
                 if self.indexed {
                     pass.draw_indexed(first..first.saturating_add(count), 0, 0..1);
                 } else {
@@ -336,6 +607,21 @@ impl Pass {
         }
     }
 
+    /// Hands the picture's encoder so far to the helper thread to finish (`finisher`), its open pass
+    /// ended (the caller is about to begin another); the next command opens a new encoder. Without
+    /// a helper nothing is cut.
+    fn cut(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.end_reason("encoder-cut");
+            if let Some(encoder) = self.encoder.take() {
+                if let Err(encoder) = self.finisher.send(encoder) {
+                    self.encoder = Some(encoder);
+                }
+            }
+        }
+    }
+
     /// native_submit: ends the pass, writes the arenas the encoder's commands read, submits.
     fn submit(&mut self, gpu: &Gpu, arenas: &Arenas) {
         if !self.deferred { self.submit_now(gpu, arenas); }
@@ -343,7 +629,11 @@ impl Pass {
 
     pub fn submit_now(&mut self, gpu: &Gpu, arenas: &Arenas) {
         self.end();
-        if self.encoder.is_none() { return; }
+        #[cfg(not(target_arch = "wasm32"))]
+        let cut = self.finisher.pending() != 0;
+        #[cfg(target_arch = "wasm32")]
+        let cut = false;
+        if self.encoder.is_none() && !cut { return; }
         let t = rstat::T::new();
         arenas.write(&gpu.queue);
         t.add(rstat::AWRITE);
@@ -358,6 +648,11 @@ impl Pass {
         #[cfg(not(target_arch = "wasm32"))]
         self.stats.resolve(&mut encoder);
         let commands = encoder.finish();
+        // the part cut off earlier first (waiting for the helper counts as finishing), then this one
+        #[cfg(not(target_arch = "wasm32"))]
+        let commands = self.finisher.take(commands);
+        #[cfg(target_arch = "wasm32")]
+        let commands = [commands];
         t.add(rstat::FINISH);
         #[cfg(not(target_arch = "wasm32"))]
         if std::env::var_os("DHD_SUBMIT_POLL").is_some() {
@@ -366,7 +661,7 @@ impl Pass {
             t.add(rstat::PREPOLL);
         }
         let t = rstat::T::new();
-        gpu.queue.submit([commands]);
+        gpu.queue.submit(commands);
         t.add(rstat::QSUB);
         #[cfg(not(target_arch = "wasm32"))]
         self.stats.collect(gpu);
@@ -397,7 +692,7 @@ fn uses_constant(blend_key: u32) -> bool {
 
 /// The draw constants as the uniform block's bytes.
 fn constant_bytes(c: &DhdrNativeConstants) -> &[u8] {
-    // SAFETY: DhdrNativeConstants is repr(C) with 24 four-byte fields and no padding, so every
+    // SAFETY: DhdrNativeConstants is repr(C) with 56 four-byte fields and no padding, so every
     // byte is initialised; the length is its size.
     unsafe { std::slice::from_raw_parts((c as *const DhdrNativeConstants).cast::<u8>(), std::mem::size_of_val(c)) }
 }
@@ -416,6 +711,8 @@ impl Native {
         let _spike = crate::native::pipelines::SpikeTimer::new("picture", 0);
         let whole = rstat::T::new();
         let gpu = self.gpu;
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::native::init::test_refusal();
         gputimes::picture_begin(gpu);
         #[cfg(not(target_arch = "wasm32"))]
         self.pass.stats.picture_begin(gpu);
@@ -427,7 +724,11 @@ impl Native {
             self.arenas.reserve_indices(gpu, p.commands, count)?;
         }
         t.add(rstat::RESERVE);
-        let uniforms = self.arenas.uniform_group().cloned().ok_or("gs native: no constants bind group")?;
+        rstat::tally(rstat::COMMANDS, p.commands.len() as u64);
+        rstat::tally(rstat::VERTICES, p.vertices.len() as u64);
+        rstat::tally(rstat::INDICES, indices.map_or(0, |i| i.len() as u64));
+        self.arenas.reserve_draws(gpu, &self.objects.draws_layout, p.commands)?;
+        let uniforms = self.arenas.draw_group().cloned().ok_or("gs native: no draw constants bind group")?;
         let vertices = self.arenas.vertex_buffer().cloned().ok_or("gs native: no vertex buffer")?;
         let vertex_bytes = self.arenas.vertex_capacity();
         let index_buffer = match indices {
@@ -450,7 +751,8 @@ impl Native {
             self.surfaces.prepare(&mut kit)?;
         }
         t.add(rstat::SURFACES);
-        let views = Views { shared, uniforms, vertices, vertex_bytes, indices: index_buffer };
+        let mesh = self.objects.mesh_layout.clone().and_then(|layout| self.arenas.mesh_group(gpu, &layout));
+        let views = Views { shared, uniforms, vertices, vertex_bytes, indices: index_buffer, mesh };
         let t = rstat::T::new();
         self.render(p, indices, &views);
         t.add(rstat::RECORD);
@@ -494,7 +796,19 @@ impl Native {
         // Keep the existing consecutive-run rule (last_convert) exactly as before.
         let mut versions = vec![0u64; p.surfaces.len()];
         let mut conversions: Vec<Option<([u64; 4], wgpu::BindGroup)>> = vec![None; p.converts.len()];
+        // Where the picture's encoder is cut and its first part handed to the helper thread
+        // (finding 195): at the first pass that begins once this much of its work is behind.
+        let mut last_pass = None;
+        let all_work: usize = p.commands.iter().map(|k| encode_work(k, &mut last_pass)).sum();
+        #[cfg(not(target_arch = "wasm32"))]
+        let vendor = gpu.info.vendor;
+        #[cfg(target_arch = "wasm32")]
+        let vendor = 0;
+        let mut cut_at = cut_point(p.commands.iter().filter(|k| k.kind == DHDR_CMD_DRAW && k.count != 0).count(), all_work, vendor);
+        let (mut work, mut last_pass) = (0usize, None);
         for (i, k) in p.commands.iter().enumerate() {
+            let cut_due = cut_at.is_some_and(|at| work >= at);
+            work += encode_work(k, &mut last_pass);
             match k.kind {
                 DHDR_CMD_ALPHA_UPLOAD => {
                     if let Some(v) = versions.get_mut(k.target as usize) { *v += 1; }
@@ -538,6 +852,8 @@ impl Native {
             let wanted_depth = if depth.is_some() { k.depth as i32 } else { -1 };
             if !self.pass.open_on(k.target as i32, wanted_depth) {
                 let mut prepared = HashSet::new();
+                // ... and in one compute pass, a dispatch each (`convert_dispatch`).
+                let (mut stamps, mut ready) = (Vec::new(), Vec::new());
                 for (j, next) in p.commands.iter().enumerate().skip(i) {
                     if next.kind != DHDR_CMD_DRAW || next.target != k.target || next.depth != k.depth
                         || next.depth_key & 8 != k.depth_key & 8 { break; }
@@ -549,9 +865,14 @@ impl Native {
                     if c.surface.iter().any(|&s| s >= 0 && (s == k.target || s == k.depth)) { continue; }
                     let stamp = c.surface.map(|s| versions.get(s as usize).copied().unwrap_or(0));
                     if conversions[ci].as_ref().is_some_and(|(old, _)| *old == stamp) { continue; }
-                    if let Some(group) = self.convert(p, ci, v.shared) {
-                        conversions[ci] = Some((stamp, group));
+                    if let Some(r) = self.convert_ready(p, ci, v.shared) {
+                        stamps.push((ci, stamp));
+                        ready.push(r);
                     }
+                }
+                self.convert_dispatch(&ready, v.shared);
+                for ((ci, stamp), r) in stamps.into_iter().zip(ready) {
+                    conversions[ci] = Some((stamp, r.draw));
                 }
             }
             let (tw, th) = (target.size[0], target.size[1]);
@@ -631,8 +952,13 @@ impl Native {
                     },
                     None => None,
                 };
-                self.pass.begin(gpu, k.target as i32, depth_index, &color, z.as_ref(), &v.vertices, v.vertex_bytes,
-                                v.indices.as_ref());
+                // The open pass ends here anyway: the place to cut, with no pass added.
+                if cut_due {
+                    self.pass.cut();
+                    cut_at = None;
+                }
+                self.pass.begin(gpu, k.target as i32, depth_index, target.size, &color, z.as_ref(), &v.vertices,
+                                v.vertex_bytes, v.indices.as_ref());
             }
             let mut constants = k.constants;
             constants.scale = big_t | big_s << 8 | big_s.min(big_t) << 16;
@@ -653,6 +979,35 @@ impl Native {
             }
             let scissor = [left as u32, top as u32, (right - left) as u32, (bottom - top) as u32];
             self.pass.set_state(tw, th, scissor, uses_constant(k.blend_key).then_some(k.blend_fix));
+            if pass_trace::on() {
+                let s = &mut self.pass.state;
+                let [x, y, sw, sh] = scissor;
+                s.area = Some(match s.area {
+                    Some([l, t, r, b]) => [l.min(x), t.min(y), r.max(x + sw), b.max(y + sh)],
+                    None => [x, y, x + sw, y + sh],
+                });
+                s.draws += 1;
+                self.pass.state.zdraws += depth.is_some() as u32;
+                let mut reads = 0u64;
+                if k.texture_surface >= 0 { reads |= 1u64 << (k.texture_surface as u32 & 63); }
+                if let Some(c) = (k.convert >= 0).then(|| p.converts.get(k.convert as usize)).flatten() {
+                    for &s in c.surface.iter().filter(|&&s| s >= 0) { reads |= 1u64 << (s as u32 & 63); }
+                }
+                self.pass.state.reads |= reads;
+                // a mesh draw's vertices are object-space (its shader places them): its scissor
+                let bounds = if k.constants.flags & 4096 != 0 {
+                    Some([scissor[0], scissor[1], scissor[0] + scissor[2], scissor[1] + scissor[3]])
+                } else {
+                    draw_bounds(p.vertices, indices, k.first, k.count, big_t, scissor)
+                };
+                if let Some([l, t, r, b]) = bounds {
+                    let s = &mut self.pass.state;
+                    s.bounds = Some(match s.bounds {
+                        Some([l0, t0, r0, b0]) => [l0.min(l), t0.min(t), r0.max(r), b0.max(b)],
+                        None => [l, t, r, b],
+                    });
+                }
+            }
             // Specialise decoded textures and scaled surface reads only when both
             // scale factors match and their division is an exact binary shift.
             let source_scale = constants.scale >> 8 & 255;
@@ -671,6 +1026,11 @@ impl Native {
             // Decoded and converted textures are R32Uint texels: the `_u` entry points read them
             // (pipelines.rs TEXELS).
             let texels = if decoded.is_some() { TEXELS } else { 0 };
+            if k.constants.flags & 4096 != 0 {
+                // a mesh draw reads its objects' records (group 2)
+                let Some(mesh) = v.mesh.as_ref() else { continue };
+                self.pass.set_mesh_group(mesh);
+            }
             self.draw_passes(k, p.vertices, indices, depth.is_some(), retained_depth, texel_scale | texels, spec,
                              offset, &v.uniforms, &group);
             self.pass.drawn.draws += 1;
@@ -687,9 +1047,14 @@ impl Native {
     /// it), recorded after the open pass ends.
     fn transfer(&mut self, k: &DhdrCommand, pixels: Option<&[u32]>, shared: &NativeShared) {
         let gpu = self.gpu;
-        self.pass.end_reason(match k.kind {
+        let kind = match k.kind {
             DHDR_CMD_COPY => "copy", DHDR_CMD_IMPORT => "import", _ => "alpha-upload",
-        });
+        };
+        self.pass.end_reason(kind);
+        if pass_trace::on() {
+            pass_trace::event(&format!("transfer:{kind} source={} at={},{} to={},{} size={}x{}", k.source, k.sx, k.sy,
+                                       k.x, k.y, k.w, k.h), k.target as i32, -1);
+        }
         let (encoder, drawn) = self.pass.split(gpu);
         let mut kit = Kit::new(gpu, &self.objects, shared, &mut self.arenas, encoder);
         self.surfaces.transfer(&mut kit, k, pixels, drawn);
@@ -722,6 +1087,39 @@ impl Native {
     /// native_run_convert through convert.rs: conversion `i` with its base texture and its four
     /// source surfaces as they stand, recorded after the open pass ends; its draw bind group.
     fn convert(&mut self, p: &Picture, i: usize, shared: &NativeShared) -> Option<wgpu::BindGroup> {
+        let ready = self.convert_ready(p, i, shared)?;
+        self.convert_dispatch(std::slice::from_ref(&ready), shared);
+        Some(ready.draw)
+    }
+
+    /// The prepared conversions in one compute pass (convert.rs's `dispatch`), the open draw pass
+    /// ended first.
+    fn convert_dispatch(&mut self, ready: &[crate::native::convert::Ready], shared: &NativeShared) {
+        if ready.is_empty() {
+            return;
+        }
+        let gpu = self.gpu;
+        self.pass.end_reason("conversion");
+        if pass_trace::on() {
+            pass_trace::event(&format!("compute-convert x{}", ready.len()), -1, -1);
+        }
+        let o = ConvertObjects {
+            pipeline: &self.objects.convert_pipe,
+            layout: &self.objects.convert_layout,
+            inverse: &self.objects.inverse,
+            texels_layout: &shared.texels_layout,
+            texels_sampler: &shared.repeat,
+            dummy_view: &shared.dummy_view,
+            dummy_texels_view: &shared.dummy_texels_view,
+            dummy_depth_view: &shared.dummy_depth_view,
+        };
+        let encoder = self.pass.encoder(gpu);
+        self.converts.dispatch(gpu, encoder, &self.arenas, &o, ready);
+    }
+
+    /// Conversion `i` of the picture made ready to run (convert.rs's `prepare`): its texture, its
+    /// constants and its bind groups; nothing is recorded yet. None when it can't run.
+    fn convert_ready(&mut self, p: &Picture, i: usize, shared: &NativeShared) -> Option<crate::native::convert::Ready> {
         let gpu = self.gpu;
         let v = p.converts.get(i)?;
         let base = p.convert_base(i).map(|t| &t.view);
@@ -750,10 +1148,7 @@ impl Native {
             dummy_texels_view: &shared.dummy_texels_view,
             dummy_depth_view: &shared.dummy_depth_view,
         };
-        self.pass.end_reason("conversion");
-        let encoder = self.pass.encoder(gpu);
-        pass_trace::event("compute-convert", -1, -1);
-        self.converts.run(gpu, encoder, &mut self.arenas, &o, i, v, base, &sources)
+        self.converts.prepare(gpu, &mut self.arenas, &o, i, v, base, &sources)
     }
 
     /// native_scanout through scanout.rs: the picture's display surface (with a texture) into the
@@ -791,13 +1186,21 @@ impl Native {
                    retained_depth: bool, texel_scale: u32, spec: u32, offset: u32, uniforms: &wgpu::BindGroup,
                    group: &wgpu::BindGroup) {
         let gpu = self.gpu;
-        let (blend_key, mask, dk) = (k.blend_key, k.color_mask as u32, k.depth_key as u32);
+        let (blend_key, mask) = without_kept_colour(k.blend_key, k.color_mask as u32);
+        let dk = k.depth_key as u32;
         let (src, dst) = (blend_key >> 1 & 31, blend_key >> 6 & 31);
         let uses_as = blend_key & 1 != 0 && (src == BLEND_SA || src == BLEND_ISA || dst == BLEND_SA || dst == BLEND_ISA);
         let depth = if has_depth { 16 | if dk & 4 != 0 { 8 } else { 0 } | (dk & 3) } else if retained_depth { 17 } else { 0 };
+        if mask == 0 && depth & 8 == 0 {
+            // A blend that keeps the colour, its alpha masked and no Z write: nothing changes.
+            return;
+        }
         // texel_scale carries TEXELS (bit 29) above the scale itself.
         let texel_key = (texel_scale & 15) << TEXEL_SCALE_SHIFT | texel_scale & TEXELS;
         let texel_scale = texel_scale & 15;
+        // A translated VU1 mesh (flag 4096): its own vertex stage and culling (pipelines.rs MESH).
+        let mesh = if k.constants.flags & 4096 != 0 { MESH | if k.constants.flags & 8192 != 0 { MESH_TWO_SIDED } else { 0 } } else { 0 };
+        let texel_key = texel_key | mesh;
         let base = blend_key | depth << 18 | texel_key;
         let special = (spec as u64) << SPEC_SHIFT;
         self.pass.set_groups(uniforms, offset, group);
@@ -855,7 +1258,7 @@ fn stats_class(flags: u32, texel_scale: u32, variant: u32, depth: u32, blend: bo
     }
 }
 
-/// The picture-wide objects the draws bind: the shared dummies, the constants arena's group and
+/// The picture-wide objects the draws bind: the shared dummies, the draw constants' group and
 /// the vertex buffer (as `reserve` left them).
 struct Views {
     shared: &'static NativeShared,
@@ -864,6 +1267,8 @@ struct Views {
     vertex_bytes: u64,
     /// An indexed picture's index buffer and its bytes.
     indices: Option<(wgpu::Buffer, u64)>,
+    /// The mesh draws' group 2 (`Arenas::mesh_group`); None in the browser.
+    mesh: Option<wgpu::BindGroup>,
 }
 
 /// `len` elements at `p` (NULL only for 0; else fatal), as `ffi.rs`'s slice.
@@ -971,12 +1376,26 @@ pub mod rstat {
     /// Pictures per log line (about two seconds at 120 field/s).
     pub const EVERY: u32 = 240;
 
+    /// What a picture records, counted (`tally`): draw calls, constants copies, group 0 and group 1
+    /// binds, pipeline binds, commands, vertices and indices.
+    pub const DRAWS: usize = 0;
+    pub const COPIES: usize = 1;
+    pub const BIND0: usize = 2;
+    pub const BIND1: usize = 3;
+    pub const PIPES: usize = 4;
+    pub const COMMANDS: usize = 5;
+    pub const VERTICES: usize = 6;
+    pub const INDICES: usize = 7;
+    const TALLIES: usize = 8;
+    const TALLY_NAMES: [&str; TALLIES] = ["draws", "copies", "bind0", "bind1", "pipes", "commands", "vertices", "indices"];
+
     thread_local! {
         static ON: Cell<u8> = const { Cell::new(0) };
         static ACC: Cell<[u64; PARTS]> = const { Cell::new([0; PARTS]) };
         static COUNT: Cell<u32> = const { Cell::new(0) };
         /// Draw passes begun since the last line (each one creates a VkFramebuffer).
         static PASSES: Cell<u32> = const { Cell::new(0) };
+        static TALLY: Cell<[u64; TALLIES]> = const { Cell::new([0; TALLIES]) };
     }
 
     /// Counts a draw pass (`Pass::begin`).
@@ -984,6 +1403,18 @@ pub mod rstat {
     pub fn pass() {
         if on() {
             PASSES.with(|c| c.set(c.get() + 1));
+        }
+    }
+
+    /// Adds `n` to tally `k` (DRAWS, COPIES, ...).
+    #[inline]
+    pub fn tally(k: usize, n: u64) {
+        if on() {
+            TALLY.with(|c| {
+                let mut v = c.get();
+                v[k] = v[k].saturating_add(n);
+                c.set(v);
+            });
         }
     }
 
@@ -1046,6 +1477,10 @@ pub mod rstat {
         }
         let passes = PASSES.with(|c| c.replace(0));
         let _ = write!(line, " passes={:.1}", passes as f64 / EVERY as f64);
+        let tally = TALLY.with(|c| c.replace([0; TALLIES]));
+        for (i, name) in TALLY_NAMES.iter().enumerate() {
+            let _ = write!(line, " {name}={:.1}", tally[i] as f64 / EVERY as f64);
+        }
         crate::host::log(&line);
     }
 }
@@ -1058,8 +1493,10 @@ pub mod pass_trace {
         static ON: bool = std::env::var_os("DHD_PASS_TRACE").is_some();
         static PICTURE: Cell<u32> = const { Cell::new(0) };
     }
+    /// Whether DHD_PASS_TRACE is set (a caller builds a line's text only then).
+    pub fn on() -> bool { ON.with(|v| *v) }
     pub fn event(reason: &str, target: i32, depth: i32) {
-        if ON.with(|v| *v) {
+        if on() {
             let n = PICTURE.with(Cell::get);
             if n % 240 == 0 {
                 crate::host::log(&format!("pass-trace: picture={n} {reason} target={target} depth={depth}"));

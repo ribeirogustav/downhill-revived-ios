@@ -31,7 +31,8 @@ What works today:
 - **REVIVED SETTINGS in the game's own OPTIONS menu**, in tabs (L1/R1): resolution, display mode,
   window size, picture shape, scaling, widescreen, skip movies, vibration, the sticks' dead zone,
   the button icons (PlayStation, Xbox or Nintendo, or the controller's), your keys and buttons,
-  the size of online riders' names, texture pack and font, drawn with the game's own menus and
+  the size of online riders' names, texture pack and font, and a Performance group (shadows and
+  sun glow, lens flare, particles: see [Settings](#settings)), Native VU, drawn with the game's own menus and
   font. Changes are saved to `dhd.ini`. V-Sync (on in a new install) shows
   each picture without tearing.
 - **Unlock All** (REVIVED SETTINGS, off by default): every track, rider, bike and shop item reads as
@@ -46,7 +47,8 @@ What works today:
   the wheel scrolls a list or changes a value.
 - **EXIT GAME** in the main menu.
 - **Online races** for 2 to 10 players (experimental): an ONLINE entry in the main menu, a list of
-  public races, private races joined with a 6-character code, and a race room where the host
+  public races, private races joined with a 6-character code, P2P races (race data directly
+  between the games, 7-character codes), the room's region, and a race room where the host
   picks the track and the rules, on the project's official server (see [Online](#online)). The
   room stays open between races. Each track takes as many riders as the game gives it (10, 8
   or 6, shown in the track picker); when more players are ready than the track takes, the race
@@ -61,11 +63,14 @@ What works today:
 - **Keyboard play**: a whole race on the keyboard, with gradual steering; letters go by their
   place on the keyboard, so AZERTY and QWERTZ work too (see [Controls](#controls)).
 - **Your own keys and buttons**: every PlayStation button can be put on another key or controller
-  button, a main and an alternate, for the keyboard and each of two controllers, with Swap Sticks
-  and Invert per stick axis, in the game or the launcher (see [Controls](#controls)).
+  button, a main and an alternate, for the keyboard and each of two controllers, with Swap Sticks,
+  Swap L1/L2, Swap R1/R2 and Invert per stick axis, in the game or the launcher (see
+  [Controls](#controls)).
 - **Sound**: the game's sound driver is replaced by a native mixer, with music, effects and reverb.
 - **Android phones and tablets** (experimental): the same game with touch controls (Classic pad
-  or Thumb zones, tilt steering if you like), or a controller. No online races on phones yet.
+  or Thumb zones, tilt steering if you like), or a controller. Online: P2P races only. The game's
+  codes are typed on the touch pause panel's **CODES** page (the d-pad and the four face
+  buttons); **ENTER** goes back to the race and enters them.
 
 Known gaps:
 
@@ -73,7 +78,8 @@ Known gaps:
 - Online races have been tested with two games (PC and Mac) and up to nine scripted players, not
   yet with ten people on ten PCs.
 - The browser version (experimental) at <https://downhill-revived.pages.dev/play/> needs Chrome or
-  Edge 137 or later and a fast PC; online races are off there. It reads your `.iso` in place in
+  Edge 137 or later and a fast PC; its online play is P2P races only (a page that can't reach the
+  room's hub doesn't race). It reads your `.iso` in place in
   the browser and uploads nothing. Its source is `port/web`.
 - The game has only been tested on a few PCs. Please report problems.
 
@@ -112,7 +118,7 @@ as a non-Steam game from Desktop Mode. Your files go to `~/.local/share/downhill
 and needs WebKitGTK 4.1 from your distribution (`libwebkit2gtk-4.1-0`, already there with GNOME).
 Neither is signed.
 
-**Android** (experimental, arm64, Android 11 or later with Vulkan):
+**Android** (experimental, arm64, Android 10 or later with Vulkan):
 `DownhillRevived-<version>-android-experimental.apk`. Open it on the phone and allow installs
 from your browser or file manager when Android asks; the app is not on Google Play. At the first
 start choose your `.iso`; it is copied into the app once (a few GB). Install a new release's APK
@@ -239,6 +245,10 @@ meaning (Cross pedals in a race and confirms in menus), only the key or button f
   The keyboard can also take the sticks' directions.
 - A controller's sticks stay its own: **Swap Sticks** (the right stick steers) and an **Invert**
   for each axis of each stick.
+- **Swap L1/L2** and **Swap R1/R2** (off by default) are for controllers that report a shoulder
+  button as its trigger and the trigger as the shoulder: the two change places before anything
+  else reads them. Your bindings stay as they are, and a button you press to bind one counts as the
+  place it then has, so with a swap on you never need to rebind the four buttons by hand.
 - The button icons (Button Icons) show the controller button you chose for each PlayStation
   button.
 - **Reset Keyboard**, **Reset Controller 1** and **Reset Controller 2** (and the launcher tab's
@@ -248,7 +258,7 @@ They are saved in `dhd.ini` as one line for each layout, with only what differs 
 defaults:
 
     keyboard = cross:j,space square:x
-    pad1 = cross:east circle:south sticks:swap invert:ly
+    pad1 = cross:east circle:south sticks:swap invert:ly l1l2:swap r1r2:swap
 
 Each entry is `button:key` or `button:main,alternate` (`none` for nothing). Buttons: `cross`,
 `circle`, `square`, `triangle`, `l1`, `r1`, `l2`, `r2`, `l3`, `r3`, `start`, `select`, `up`,
@@ -263,7 +273,8 @@ Controller buttons by their place: `south`, `east`, `west`, `north` (the face bu
 PlayStation pad Cross, Circle, Square, Triangle; on an Xbox pad A, B, X, Y), `lb`, `rb`, `lt`,
 `rt`, `ls`, `rs` (the sticks pressed), `back`, `start`, `dpad_up`, `dpad_down`, `dpad_left`,
 `dpad_right`, `misc` (Share, Mic or Capture), `paddle_r1`, `paddle_l1`, `paddle_r2`, `paddle_l2`,
-`touchpad`. The defaults are the tables above: the keyboard's keys, and on a controller the
+`touchpad`. A controller's line may add `sticks:swap`, `invert:` with `lx`, `ly`, `rx`, `ry`, and
+`l1l2:swap` and `r1r2:swap`. The defaults are the tables above: the keyboard's keys, and on a controller the
 button in the same place as on a PlayStation pad. A line the game can't read is skipped where it
 can't be read (that button keeps its default) and dhd.log says why; a line that would leave the
 keyboard or a controller without Cross, Triangle, START, R1 or a d-pad direction puts that one layout
@@ -273,12 +284,37 @@ back to its defaults. Players 3 and 4 use the default controller layout.
 
 Online works out of the box: choose ONLINE in the main menu to create a public or private race,
 or join one from the list or with its code. The game uses the project's official server,
-`wss://dhd.skuza.app`. Every player needs the same USA disc image and the same release of the
-game (0.7.12 and later can't race with 0.7.11 or older; the ONLINE menu offers the update).
+`wss://dhd.skuza.app`. Every player in a room needs the same USA disc image and the same release
+of the game: rooms of another release show as OTHER VERSION in the list, and a release the server
+no longer takes gets "A new version is out" and Update Now in the ONLINE menu.
 
 In a race the riders' data goes over Cloudflare's network, from the Cloudflare location nearest
 to you (UDP). Where a network blocks UDP, the game falls back to an encrypted connection on port
-443 by itself. No other player ever gets your internet address.
+443 by itself. In these rooms no other player ever gets your internet address.
+
+#### P2P races
+
+ONLINE > **Create A P2P Race** makes a private room (never listed) with a 7-character code; others
+join with Join With A Code. The room, its rules and the results run on the server as in any room,
+but the race data goes directly between the players' games over WebRTC: one game, the hub (the
+creator first; the next player when it leaves or its links fail), passes the others' data on, and
+a player whose game can't reach the hub races over Cloudflare's network in the same room, bridged
+by the hub. On a LAN or nearby this can be quicker than Cloudflare's network.
+
+**Your address:** in a P2P room the games connect directly, so the other players can see your
+network (IP) address, and the hub sees the address of everyone linked to it. The game says so on
+the menu row and when the room opens. Play P2P races with people you trust. `dhd.log` shows a P2P
+room's code only by its first two characters.
+
+On Android and in the browser, P2P races are the only online races so far.
+
+A room's server (the lobby: who is in it, the next race, the start) runs in one of Cloudflare's
+Durable Object cities, which are in North America, Europe, East and Southeast Asia and Australia
+only. ONLINE's **Room Region** row picks where the rooms you create run: Auto (the server picks the
+one nearest the Cloudflare location you reach) or EU West, EU East, NA East, NA West, Asia NE,
+Asia SE or Oceania. The FPS & Ping counter (`perf_counter`) shows both numbers: `SERVER` is the
+room's server and `RACE` the race network. From South America, Africa or the Middle East the
+`SERVER` number is high wherever the room runs; races don't go through it.
 
 Running your own server is optional. `online/server/` is the server (Cloudflare Workers), and
 [online/server/README.md](../online/server/README.md) explains how to deploy it. Then put its
@@ -298,8 +334,8 @@ the game makes once and keeps in `dhd.ini` as `install_id`; it says nothing abou
 PC). Log entries are deleted after 14 days. A player who is banned is banned by that hash or
 install id, not by name, until the ban ends (or until it is lifted, for one without an end).
 
-No other player ever sees your internet address, its hash or your install id, and the game
-doesn't write the install id into `dhd.log`. Deleting the `install_id` line makes the game
+No other player ever sees your address's hash or your install id, outside P2P rooms (above) no
+other player sees your address, and the game doesn't write the install id into `dhd.log`. Deleting the `install_id` line makes the game
 pick a new one. Players in a room see each other's rider names, ping and region (EU, NA...).
 
 The server's operator can also turn online races off for a while; the ONLINE screen then says
@@ -320,6 +356,19 @@ Graphics, Controls, Online and Game tabs; the legend shows your bound inputs. Up
 rows and left/right change them. Cross keeps changes and closes; Triangle undoes the settings
 page's changes and closes (Android Back keeps them). Controls and Touch Controls save as you go.
 A star marks a choice that applies at the next start. A host hides tabs it cannot offer.
+
+The Graphics tab's **Performance** group makes the game lighter on slower PCs and phones:
+Performance Mode ON turns off the three effects below it (the riders' shadows and the sun's glow,
+the lens flare, the particles), OFF turns them all back on, and Custom shows a mix. Each can be
+set alone. They apply at once, online too: only the picture changes, never the race.
+
+**Native VU** (Graphics tab, on by default) runs the PS2's VU1 programs (the ones that place the
+world, the lit objects and the shadows) on your graphics card instead of emulating them, which
+gives more frames a second, most on a fast graphics card at a high resolution. It applies at once,
+online too, and changes only the picture. If your graphics card can't run it, `dhd.log` says so
+and the game goes on without it. If something in the picture looks wrong, turn it OFF (the game
+then emulates those programs as before) and tell us with your `dhd.log`. Not in the browser
+version.
 
 `dhd.ini` in your data folder holds `key = value` lines; the game writes it, with comments, at the
 first start. The REVIVED SETTINGS page writes most of them for you.
@@ -347,18 +396,38 @@ first start. The REVIVED SETTINGS page writes most of them for you.
 | `server` | (empty) | the online server; empty: the official one |
 | `font` | `sharp` | `original` draws the game's font as the PS2 does |
 | `vsync` | `1` | `1` shows each picture without tearing, `0` sends it at once (may tear) |
+| `perf_counter` | `0` | `1` shows FPS & Ping: frames a second and, online, `SERVER N MS` (the round trip to the room's server, which carries no race data) and `RACE N MS` (the round trip to Cloudflare's race network, where race data goes); in a race `RIDERS N MS` instead of `RACE`, how old the other riders' positions are when they arrive |
 | `unlock_all` | `0` | `1`: everything reads as unlocked, without changing the save |
 | `name` | (empty) | your rider name in online races |
+| `shadows` | `1` | Performance: `0` turns off the riders' shadows and the sun's glow |
+| `lens_flare` | `1` | Performance: `0` turns off the lens flare's ghosts (the sun's disc and halo stay) |
+| `particles` | `1` | Performance: `0` turns off the particles (dust, dirt, spray, heat haze) |
+| `native_vu` | `on` | Native VU: the VU1 programs run on the graphics card; `off` emulates them (for troubleshooting) |
+| `room_region` | `auto` | where the rooms you create run (ONLINE's Room Region row): `auto` (the server picks by where you reach Cloudflare), `weur`, `eeur`, `enam`, `wnam`, `apac-ne`, `apac-se` or `oc` |
 
 Each key has a `DHD_*` environment variable (`scale` is `DHD_SCALE`, `server` is
 `DHD_NET_SERVER`; see [docs/BUILDING.md](BUILDING.md)), which wins over the file.
 
 ### System requirements
 
-- Windows 10 or 11, 64-bit.
-- A graphics card with Direct3D 12 or Vulkan. Without one the game draws with Windows' software
-  renderer (WARP), slowly.
-- A reasonably modern CPU: the PS2's vector units are run on the CPU.
-- Or, experimental: a Mac with Apple silicon (M1 or later) on macOS 11 or later; or 64-bit Linux
-  with glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36, Linux Mint 21 and later), a Vulkan
-  driver and WebKitGTK 4.1 for the launcher; or an arm64 Android 11 phone or tablet with Vulkan.
+Every platform needs your own dump of the USA disc (SCUS-97177) as an `.iso` (about 2.4 GB) and
+about 300 MB for the game. **Minimum** means about 60 fps at 1x-2x resolution; **recommended**
+means 60 fps or more at 4x and up. Lines marked *estimate* are not yet measured on that hardware.
+
+| | Minimum | Recommended |
+|---|---|---|
+| **Windows** | Windows 10/11 64-bit; a 4-thread CPU from about 2016 (Core i5 6th gen, Ryzen 3 1200; *estimate*); a Direct3D 12 or Vulkan GPU, integrated is fine (Intel UHD 620, AMD Vega 8; *estimate*); 4 GB RAM | a 6-core CPU (Ryzen 5 3600, Core i5 10th gen); GTX 1060 / RX 580 for 4x, RTX 2060 / RX 6600 for 8x (*estimate*); 8 GB RAM |
+| **Mac** (experimental) | Apple silicon (M1 or later), macOS 11 or later, 8 GB | any M-series Mac |
+| **Linux** (experimental) | 64-bit, glibc 2.35 or later (Ubuntu 22.04, Debian 12, Fedora 36, Linux Mint 21 and later), a Vulkan driver (Mesa 22+, NVIDIA 470+), WebKitGTK 4.1 for the launcher's zip (the AppImage carries it); CPU and GPU as on Windows; Steam Deck works | as on Windows |
+| **Android** (experimental) | Android 10 or later, arm64 with Vulkan; a Helio G80/G85 or Snapdragon 680 class chip (Mali-G52 MC2 GPU); 4 GB RAM; 3 GB free storage; **Performance Mode on** (REVIVED SETTINGS > Graphics) | Snapdragon 778G / 870, Dimensity 1080 or better |
+| **Browser** (experimental) | desktop Chrome or Edge with WebGPU; a 6-core desktop CPU from about 2019 (the browser runs at about a third of native speed); online: P2P races only | a fast 8-core desktop |
+| **iPhone / iPad** | not available | |
+
+Measured: a Ryzen 5 7600 with an RTX 3070 runs about 250 fps at 8x; AMD integrated graphics hold
+60 fps at 5x; an M1 MacBook Air runs over 100 fps; a Redmi 9 (Helio G80) about 50 fps at 2x and
+about 63 with Performance Mode; a Mi 11i (Snapdragon 870) 59 fps at 2x.
+
+Below the minimum the game may still start, but runs well under 60 fps: phones with a Helio
+G35/P35/A22 (PowerVR GE8320), Snapdragon 4xx or Unisoc SC9863A, phones with 2-3 GB of RAM, and
+PCs with 2 cores and old integrated graphics. Speed reports from such devices are closed with a
+pointer here; crashes are fixed on any device.

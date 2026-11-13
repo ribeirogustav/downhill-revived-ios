@@ -50,29 +50,40 @@ void port_card_setup(int on) { card_setup = on; }
 static int map_2d(void) { return widescreen && !card_2d && !card_setup; }
 
 /* The game's views (func_0023D650, func_0023D8D8): an entry per view, its View first the focal
-   length in pixels (x0, the X field of view, already times s) and the size in pixels. */
+   length in pixels (x0, the X field of view, already times s) and the size in pixels. The table
+   has six 20-byte entries: func_0023D6C8 clears views 0-5 (slti 6) at boot (finding 192). */
 typedef struct { float x0; unsigned short width, height; } WsView;
 typedef struct { void *camera; WsView *view; int mode; char pad[8]; } WsEntry;
-/* Six slots are initialized by func_0023D6C8; the matrices follow the table. */
 enum { WS_VIEW_COUNT = 6 };
 extern WsEntry D_0075A9D0[WS_VIEW_COUNT];
+
+/* The view's View, or NULL for a view number outside the table or a view not set up. */
+static const WsView *ws_view(int view)
+{
+    return view >= 0 && view < WS_VIEW_COUNT ? D_0075A9D0[view].view : NULL;
+}
 extern unsigned char D_0029C470;  /* inventory modal, set by func_00139BF8 */
 extern int D_0029E454; /* active view */
 void func_0023D898(int view, float *focal, float *vertical);
 void func_0023D8D8(int view, float focal, float vertical);
 void func_0023CB00(int view);
-static int rebuilding_projection;
+
+/* The projection setter func_0023D8D8 (port/patches.py) scales the title's and shell menus' X
+   focal length, 688, which their callers pass unscaled. The bike shop (func_001F84A8) zooms from
+   688 to 3000 and calls through port_ws_set_focal, which scales it itself: there the setter must
+   leave it, or the zoom step whose scaled value is exactly 688 would be scaled twice. */
+static int focal_scaled;
 
 float port_ws_menu_focal(float focal)
 {
-    return !rebuilding_projection && focal == 688.0f ? focal * port_fov_x : focal;
+    return !focal_scaled && focal == 688.0f ? focal * port_fov_x : focal;
 }
 
 void port_ws_set_focal(int view, float focal, float vertical)
 {
-    rebuilding_projection = 1;
+    focal_scaled = 1;
     func_0023D8D8(view, focal * port_fov_x, vertical);
-    rebuilding_projection = 0;
+    focal_scaled = 0;
 }
 void func_0023D618(int view, int *x, int *y);   /* the view's centre in GS pixels */
 void func_0023D650(int view, int *width, int *height);
@@ -136,7 +147,7 @@ static void apply_aspect(double want)
 {
     /* PS2 address, retail word, 1 for an X (times s) or 0 for a Y factor (divided by s). The view
        table D_0027ECC0 (0xC0 bytes a view: X at +0, Y at +0x20) for 1P, 2P both ways, 4P and
-       paused; and the menu's Y. */
+       paused; the menu's Y. The sprite widths are in ws_sprite_widths (widescreen_sprites.h). */
     static const uint32_t words[][3] = {
         {0x27ECC0, 0x438A8000, 1}, {0x27ECE0, 0x3F15551D, 0},  /* paused X, 1P Y */
         {0x27ED80, 0x438A8000, 1}, {0x27EDA0, 0x3F155550, 0},  /* 2P horizontal */
@@ -176,15 +187,21 @@ static void apply_aspect(double want)
             hle_log("widescreen: %06X holds %08X, not %08X; left\n", words[i][0], *at, words[i][1]);
         }
     }
-    uint32_t expected_sprite = float_bits(277.0f * previous);
-    uint32_t next_sprite = float_bits(277.0f * port_fov_x);
-    for (unsigned i = 0; i < sizeof ws_sprite_widths / sizeof *ws_sprite_widths; i++) {
+    unsigned sprites = sizeof ws_sprite_widths / sizeof *ws_sprite_widths;
+    for (unsigned i = 0; i < sprites; i++) {
         uint32_t *at = (uint32_t *)(uintptr_t)(PS2_RAM_BASE + ws_sprite_widths[i].ee);
-        if (word_owned(at[0], expected_sprite, applied_sprites[i]) && at[1] == ws_sprite_widths[i].upper)
-            at[0] = applied_sprites[i] = next_sprite;
+        float retail = bits_float(ws_sprite_widths[i].retail);
+        int owned = at[0] == ws_sprite_widths[i].retail;
+        if (!owned && applied_sprites[i] && previous != 1.0f)
+            owned = word_owned(at[0], float_bits(retail * previous), applied_sprites[i]);
+        if (owned && at[1] == ws_sprite_widths[i].upper) {
+            at[0] = applied_sprites[i] = float_bits(retail * port_fov_x);
+            changed++;
+        } else hle_log("widescreen: %06X holds %08X %08X, not %08X %08X; left\n", ws_sprite_widths[i].ee,
+                       at[0], at[1], ws_sprite_widths[i].retail, ws_sprite_widths[i].upper);
     }
     hle_log("widescreen: aspect %.4f (s %.4f), %u of %u data words\n", aspect, port_fov_x, changed,
-            (unsigned)(sizeof words / sizeof *words));
+            (unsigned)(sizeof words / sizeof *words) + sprites);
 }
 
 static int ios_display_auto;
@@ -226,7 +243,7 @@ static void update_ios_projection(double next)
     }
     apply_aspect(next);
     float change = port_fov_x / previous;
-    rebuilding_projection = 1;
+    focal_scaled = 1;
     /* Rebuild the active slot last so shared camera values describe that view. */
     for (int i = 0; i <= WS_VIEW_COUNT; i++) {
         if (i == active_view) continue;
@@ -241,7 +258,7 @@ static void update_ios_projection(double next)
             func_0023CB00(slot);
         }
     }
-    rebuilding_projection = 0;
+    focal_scaled = 0;
     D_0029E454 = active_view;
 }
 
@@ -301,7 +318,7 @@ double host_widescreen_frame_aspect(void)
 static int view_size(int view, int *cx, int *w)
 {
     int cy, h;
-    if (view < 0 || view >= WS_VIEW_COUNT || !D_0075A9D0[view].view) return 0;
+    if (!ws_view(view)) return 0;
     func_0023D618(view, cx, &cy);
     func_0023D650(view, w, &h);
     return *w > 0;
@@ -383,8 +400,8 @@ static void touch_hud_move(float u, float v, float *du, float *dv)
 void port_ws_hud_offset(int view, float *local)
 {
     touch_hud_seen = 1;
-    if (view < 0 || view >= WS_VIEW_COUNT || !D_0075A9D0[view].view) return;
-    const WsView *v = D_0075A9D0[view].view;
+    const WsView *v = ws_view(view);
+    if (!v) return;
     float depth = local[1], focal = v->x0, half = v->width * 0.5f;
     if (depth <= 0 || focal <= 0 || half <= 0) return;
     if (touch_hud_place) {   /* the piece's place in the 4:3 view; its height is three quarters of its width */
@@ -438,7 +455,7 @@ static void touch_hud_text(int view, int *x, int *y)
 {
     touch_hud_seen = 1;
     int w, h;
-    if (!touch_hud_place || view < 0 || view >= 32 || !D_0075A9D0[view].view) return;
+    if (!touch_hud_place || !ws_view(view)) return;
     func_0023D650(view, &w, &h);
     if (w <= 0 || h <= 0) return;
     float du, dv;

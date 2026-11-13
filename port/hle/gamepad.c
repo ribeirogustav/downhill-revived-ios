@@ -19,6 +19,9 @@
    shoulders, 6/7 the triggers (fully pressed or not), 8 back, 9 start, 10/11 the sticks pressed.
    gamecontrollerdb.txt beside dhd.exe (SDL's format) adds or corrects mappings; so does
    SDL_GAMECONTROLLERCONFIG. DHD_SDL=0: no pads (the keyboard still plays).
+   A layout's Swap L1/L2 and Swap R1/R2 (finding 189) make a shoulder and its trigger change places
+   before the layout reads them (gamepad_place), for pads that report them the other way round: the
+   bindings name the places the player presses, and the CONTROLS page's wait goes through the swap.
    The sticks go through the layout's Invert and Swap Sticks, then the dead zone the player chose
    (stick.h, dhd.ini stick_dead_zone; finding 134), and each pad says which kind it is
    (PlayStation, Xbox, Nintendo) for the button icons (port/gs/button_icons.c). */
@@ -97,6 +100,25 @@ static void read_joystick(SDL_Joystick *j, GamepadRaw *raw)
     if (axes > 3) raw->axis[2] = SDL_GetJoystickAxis(j, 2), raw->axis[3] = SDL_GetJoystickAxis(j, 3);
 }
 
+/* The input whose state stands for `id`'s place with the layout's shoulder swaps (finding 189):
+   with Swap L1/L2 the left shoulder (lb) reads the left trigger (lt) and the other way round, with
+   Swap R1/R2 the right ones. A swap is its own inverse, so the same call turns a pressed input into
+   its place (the CONTROLS page's wait, host.c). */
+int gamepad_place(const struct ControlsLayout *layout, int id)
+{
+    static int lb, lt, rb, rt;
+    if (!lb) lt = input_id("lt"), rb = input_id("rb"), rt = input_id("rt"), lb = input_id("lb");
+    if (layout->swap_shoulders & CONTROL_SWAP_L) {
+        if (id == lb) return lt;
+        if (id == lt) return lb;
+    }
+    if (layout->swap_shoulders & CONTROL_SWAP_R) {
+        if (id == rb) return rt;
+        if (id == rt) return rb;
+    }
+    return id;
+}
+
 /* An input's value in a state: a button's 255 while held, a trigger's byte. */
 static int input_value(const GamepadRaw *raw, int id)
 {
@@ -108,6 +130,11 @@ static int input_value(const GamepadRaw *raw, int id)
 /* An axis turned round: -32768 and 32767 change places, the centre stays. */
 static int16_t inverted(int16_t v) { return v == -32768 ? 32767 : (int16_t)-v; }
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
+#if defined(__APPLE__) && TARGET_OS_IPHONE
 /* Cross-axial deadzone: keeps steering or pitch pure when predominantly on one axis
    by suppressing parasitic thumb-arc tilt (up to ~20°), while preserving diagonal tricks. */
 static void gamepad_filter_stick(int16_t *px, int16_t *py)
@@ -139,13 +166,14 @@ static void gamepad_filter_stick(int16_t *px, int16_t *py)
     *px = (int16_t)x;
     *py = (int16_t)y;
 }
+#endif
 
 void gamepad_apply(const struct ControlsLayout *layout, const GamepadRaw *raw, int dead_zone, HostPad *out)
 {
     uint8_t pressure[CONTROL_BUTTONS] = {0};
     for (int t = 0; t < CONTROL_BUTTONS; t++)
         for (int s = 0; s < CONTROL_SLOTS; s++) {
-            int value = layout->input[t][s] ? input_value(raw, layout->input[t][s]) : 0;
+            int value = layout->input[t][s] ? input_value(raw, gamepad_place(layout, layout->input[t][s])) : 0;
             if (value > pressure[t]) pressure[t] = (uint8_t)value;
             if (value > PRESSED) out->buttons |= control_targets[t].bit;
         }
@@ -156,8 +184,10 @@ void gamepad_apply(const struct ControlsLayout *layout, const GamepadRaw *raw, i
     static const uint8_t invert[4] = {CONTROL_INVERT_LX, CONTROL_INVERT_LY, CONTROL_INVERT_RX, CONTROL_INVERT_RY};
     for (int i = 0; i < 4; i++) axis[i] = layout->invert & invert[i] ? inverted(raw->axis[i]) : raw->axis[i];
     int left = layout->swap_sticks ? 2 : 0, right = 2 - left;
+#if defined(__APPLE__) && TARGET_OS_IPHONE
     gamepad_filter_stick(&axis[left], &axis[left + 1]);
     gamepad_filter_stick(&axis[right], &axis[right + 1]);
+#endif
     out->left_x = stick_byte(axis[left], dead_zone), out->left_y = stick_byte(axis[left + 1], dead_zone);
     out->right_x = stick_byte(axis[right], dead_zone), out->right_y = stick_byte(axis[right + 1], dead_zone);
 }

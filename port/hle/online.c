@@ -31,6 +31,7 @@
 #include "../net/net.h"
 #include "../include/version.h"
 #include "../include/fps.h"
+#include "state_bundle.h"
 
 #include <ctype.h>
 #include <stdarg.h>
@@ -65,7 +66,7 @@ static int online_mode(void)
 {
     if (online < 0) {
         online = getenv("DHD_NET_CREATE") != NULL || getenv("DHD_NET_JOIN") != NULL;
-        if (online && !host_service_net_offered()) {  /* Android and the browser: no online yet */
+        if (online && !host_service_net_offered()) {  /* a build without online play */
             fprintf(stderr, "online: DHD_NET_CREATE / DHD_NET_JOIN ignored: this build offers no online play\n");
             online = 0;
         }
@@ -268,6 +269,7 @@ int hle_puppet_lag(char *out, int size);
 int hle_puppet_hits_taken(void);
 int hle_puppet_global(int slot), hle_puppet_local(int global), hle_puppet_owned(int slot);
 void hle_puppet_start(void);
+void hle_puppet_go(double go_server_ms);
 extern int func_001FA7C0(int frame);                      /* a frame's own colour (the shop's first BIKE COLOR) */
 extern void func_001B45F8(void *timer, int kind, int ticks);  /* the race-end countdown */
 
@@ -277,9 +279,11 @@ enum {
     EVENT_VERSION = 2, EVENT_HIT = 1, EVENT_LOADED = 2, EVENT_SETUP = 3, EVENT_START = 4, EVENT_GO = 5,
     EVENT_FINISH = 6, EVENT_RESULTS = 7, EVENT_PICKUP = 9  /* 8 was 0.7.3's rematch (TRY AGAIN / NEW LEVEL in the race) */
 };
-enum { SNAPSHOT_TICKS = 2 };  /* a snapshot every 2 race ticks: 30 a second at any frame rate */
+/* Snapshots: this PC's own rider every race tick (60 a second at any frame rate), the AI riders it
+   runs every AI_SNAPSHOT_TICKS (30 a second; finding 169). */
+enum { AI_SNAPSHOT_TICKS = 2 };
 enum { NRIDERS = 10, START_LEAD_MS = 1500 };
-_Static_assert(2 + 834 <= NET_FRAME_MAX, "one independent rider snapshot fits one STATE frame");
+_Static_assert(2 + STATE_BUNDLE_MAX <= NET_FRAME_MAX, "a STATE bundle fits one frame");
 #define RACE_CLOCK EE32(0x43EEC8)
 /* The race object D_0043EEC0 (func_0019F210): +8 the race clock, +0x1C finish times (race ticks)
    and +0x58 finished flags by rider slot, +0x62 finishes to apply on the next step. */
@@ -323,8 +327,9 @@ static struct {
        moment; the players it still waits for (start_waiting: the first) */
     double start_entered, start_said;
     int start_announced, start_missing, start_waiting;
-    int last_sent;              /* race clock of the last snapshot sent */
-    unsigned sent, received;
+    int last_sent, last_ai_sent; /* race clock of the last snapshots sent: this PC's rider, the AI */
+    unsigned sent, received;    /* rider snapshots */
+    unsigned bundles_sent;      /* STATE messages (bundles) */
     /* the finish (global rider ids: humans 0..nslots-1, AI riders their slot) */
     int finish[NRIDERS];        /* race ticks, -1: not finished */
     int reported[NRIDERS];
@@ -425,8 +430,8 @@ static void connect_lobby(void)
     host_service_net_init(GADDR(server), GADDR(name && *name ? name : "Rider"), GADDR(version), GADDR(iso));
     if (join && *join) {
         if (host_service_net_join_room(GADDR(join)) < 0) fail("that join code can't be one (6 letters and digits).");
-    } else
-        host_service_net_create_room();
+    } else  /* DHD_NET_CREATE=p2p: a P2P room (findings 180, 186) */
+        host_service_net_create_room(!strcmp(getenv("DHD_NET_CREATE") ? getenv("DHD_NET_CREATE") : "", "p2p"));
     fprintf(stderr, "online: %s, version %s\n", join && *join ? "joining" : "creating a room", version);
 }
 
@@ -495,12 +500,12 @@ static void barrier(void)
         if (lobby.state == NET_FAILED)
             fail(lobby.error[0] ? lobby.error : "the connection to the server failed.");
         if (lobby.state == NET_LOBBY || lobby.state == NET_RACING) {
-            if (!ready_sent) fprintf(stderr, "online: room %s%s\n", lobby.code, lobby.is_host ? " (host)" : "");
+            if (!ready_sent) fprintf(stderr, "online: room %s%s\n", net_log_code(lobby.code).text, lobby.is_host ? " (host)" : "");
             if (lobby.is_host && !settings_sent) {
                 const char *track = getenv("DHD_NET_TRACK"), *room = getenv("DHD_NET_ROOM_NAME");
                 /* DHD_NET_CHEATS=1 (tests): the room's cheats on (options bit 2) */
                 NetRoomSettings s = {track && *track ? atoi(track) : 0, getenv("DHD_NET_CHEATS") ? 2 : -1,
-                                     getenv("DHD_NET_PUBLIC") != NULL, 4, -1, room && *room ? room : NULL};
+                                     getenv("DHD_NET_PUBLIC") != NULL, expected > 4 ? expected : 4, -1, room && *room ? room : NULL};
                 host_service_net_set_room(GADDR(&s));
                 settings_sent = 1;
             }
@@ -582,6 +587,8 @@ static void send_event(const void *payload, int n)
 
 static void put32(uint8_t *o, int32_t v) { memcpy(o, &v, 4); }
 static int32_t get32(const uint8_t *i) { int32_t v; memcpy(&v, i, 4); return v; }
+
+#include "online_start.h"
 
 /* Pickup pool: retail allocates 150 entries in level-file order (001961D8).
    Only the index travels, never a pointer. Type, track and exact spawn xyz guard it. */
@@ -839,7 +846,10 @@ void hle_online_riders(void *game)
    moment on the server's clock and every PC holds the countdown until then, so the GOs land
    within a frame or two of each other on every PC. Both are said again every half second: the PC
    that loads first can be here before another has set up its race, which would drop a single
-   message, and the start would wait 60 s.
+   message, and the start would wait 60 s. The moment goes to the room too, which sends it to the
+   racers (finding 187): a PC whose race link brings nothing still starts with the others. A host
+   that left before naming it hands that to the lowest slot still racing (online_start.h). With no
+   moment 75 s after it came here, a PC leaves the race: it never races alone.
    One step a field (pads_begin_field): the game goes on drawing while it waits, its countdown held
    where it is (hle_online_countdown_hold) and the wait on the screen (hle_online_hud). A PC that
    skipped the flight over the track waits so for one still watching it. The step whose field the
@@ -848,13 +858,15 @@ void hle_online_riders(void *game)
 static int start_step(void)
 {
     static const uint8_t loaded[2] = {EVENT_VERSION, EVENT_LOADED};
-    int host = on.local_slot == on.host_slot;
     if (!on.start_entered) {
         on.start_entered = host_wall_seconds(), on.start_said = -1;
         fprintf(stderr, "online: loaded at %.1f s, waiting for the others\n", on.start_entered);
     }
     NetLobby lobby;
     host_service_net_get_lobby(GADDR(&lobby));
+    int left[NET_MAX_SLOTS] = {0}, nslots = lobby.nslots < NET_MAX_SLOTS ? lobby.nslots : NET_MAX_SLOTS;
+    for (int i = 0; i < nslots; i++) left[i] = lobby.racer[i].left;
+    int host = on.local_slot == start_namer(on.host_slot, left, nslots);
     if (host_wall_seconds() - on.start_said >= 0.5) {
         on.start_said = host_wall_seconds();
         send_event(loaded, sizeof loaded);
@@ -872,16 +884,31 @@ static int start_step(void)
         }
     on.start_missing = missing;
     double waited = host_wall_seconds() - on.start_entered;
-    int go = !host_service_net_racing() || waited > 75;
-    if (!go && host && !on.start_announced && (!missing || waited > 60)) {
+    int racing = host_service_net_racing();
+    if (!on.go_at && lobby.race_go_at > 0) {
+        on.go_at = lobby.race_go_at;
+        fprintf(stderr, "online: the start moment came from the room (none over the race link), %+.1f ms from now\n",
+                on.go_at - host_service_net_server_ms());
+    }
+    /* a namer that took over from a host gone after naming it keeps that moment */
+    if (racing && host && !on.start_announced && !on.go_at && (!missing || waited > START_NAME_AFTER_S)) {
         uint8_t e[10] = {EVENT_VERSION, EVENT_START};
         on.go_at = host_service_net_server_ms() + START_LEAD_MS;
         memcpy(e + 2, &on.go_at, 8);
         send_event(e, sizeof e);
+        host_service_net_race_go(on.go_at);
         on.start_announced = 1;
         if (missing) fprintf(stderr, "online: %d player%s never said they loaded: starting without waiting\n",
                              missing, missing == 1 ? "" : "s");
     }
+    int rule = start_rule(racing, waited, on.go_at != 0);
+    if (rule == START_LEAVE) {
+        fprintf(stderr, "online: no start moment from the others %.1f s after loading: out of the race, not alone\n", waited);
+        on.leave_reason = "NO START FROM THE OTHERS";
+        host_service_net_back();  /* the room's next snapshot has this PC out; the race screen leaves */
+        rule = START_GO;
+    }
+    int go = rule == START_GO;
     if (!go && on.go_at && on.go_at - host_service_net_server_ms() < 1000 * port_frame_period() + 5) {
         while (host_service_net_server_ms() < on.go_at) host_sleep_ms(0);
         go = 1;
@@ -1307,6 +1334,37 @@ static void check_left(void)
     }
 }
 
+/* This tick's snapshots of the riders this PC runs (ai: the AI riders' too), bundled
+   (state_bundle.h, finding 169): as few messages as fit one datagram each, stamped with their
+   moment on the server's clock. */
+static void send_snapshots(int ai)
+{
+    static uint8_t rec[NRIDERS][STATE_RECORD_MAX], bundle[STATE_BUNDLE_RIDERS][STATE_BUNDLE_MAX];
+    const uint8_t *recs[NRIDERS];
+    int size[NRIDERS], slots[NRIDERS], count = 0, bundle_size[STATE_BUNDLE_RIDERS];
+    for (int slot = 0; slot < (ai ? hle_online_race_riders() : 1) && count < NRIDERS; slot++) {
+        int n = hle_puppet_pack(slot, rec[count], STATE_RECORD_MAX);
+        if (n <= 0) continue;
+        recs[count] = rec[count], size[count] = n, slots[count++] = slot;
+    }
+    if (!count) return;
+    /* The moment the snapshots show, on the server clock: our GO there plus the race time. Not
+       the clock at packing: the race clock may trail the wall clock by a few ms (pacing), and the
+       pose is the race clock's (finding 169). */
+    double stamp = on.go_server ? on.go_server + port_field_seconds(RACE_CLOCK) * 1000 : host_service_net_server_ms();
+    if (slots[0] == 0) {  /* DHD_NET_RECORD: this PC's rider alone, as a bundle of one */
+        int one_size;
+        if (state_bundle_pack(recs, size, 1, stamp, bundle, &one_size)) record(bundle[0], one_size);
+    }
+    int bundles = state_bundle_pack(recs, size, count, stamp, bundle, bundle_size), sent = 0;
+    for (int b = 0; b < bundles; b++)
+        sent += host_service_net_send_frame(NET_FRAME_STATE, GADDR(bundle[b]), bundle_size[b]) != 0;
+    if (!sent) return;
+    on.bundles_sent += sent;
+    on.sent += count;
+    for (int i = 0; i < count; i++) on.ai_sent += slots[i] != 0;
+}
+
 /* Each vsync of the race: the snapshots and events in, ours out. */
 static void state_sync(void)
 {
@@ -1317,6 +1375,7 @@ static void state_sync(void)
     if (race_running() && !on.go_sent) {  /* GO: when it was, on the server's clock */
         uint8_t e[10] = {EVENT_VERSION, EVENT_GO};
         on.go_server = host_service_net_server_ms() - port_field_seconds(clock) * 1000;
+        hle_puppet_go(on.go_server);  /* snapshots' server stamps onto this race clock */
         memcpy(e + 2, &on.go_server, 8);
         send_event(e, sizeof e);
         on.go_sent = 1;
@@ -1334,8 +1393,9 @@ static void state_sync(void)
         const NetMember *me = self_member(&lobby);
         int out = lobby.state != NET_RACING || !me || !me->in_race;
         if (!on.leave_at && out) {
-            on.leave_reason = FINISHED(0) ? "RACE OVER" : lobby.last_race_id != on.last_race_id
-                              ? "TIME UP - DNF" : "THE HOST ENDED THE RACE";
+            if (!on.leave_reason)  /* one the start gave stays (start_step) */
+                on.leave_reason = FINISHED(0) ? "RACE OVER" : lobby.last_race_id != on.last_race_id
+                                  ? "TIME UP - DNF" : "THE HOST ENDED THE RACE";
             fprintf(stderr, "online: race closed: back to the room\n");
             on.leave_at = now + 2;
         }
@@ -1358,18 +1418,11 @@ static void state_sync(void)
             set_env("DHD_NAV", script);
         }
     }
-    if (!race_running() || clock < on.last_sent + SNAPSHOT_TICKS && clock >= on.last_sent) return;
-    on.last_sent = clock - clock % SNAPSHOT_TICKS;
-    /* Each message is an independent rider snapshot, below the SFU message/MTU budget. */
-    for (int slot = 0; slot < hle_online_race_riders(); slot++) {
-        if ((n = hle_puppet_pack(slot, payload, sizeof payload)) > 0) {
-            if (slot == 0) record(payload, n);
-            if (host_service_net_send_frame(NET_FRAME_STATE, GADDR(payload), n)) {
-                on.sent++;
-                if (slot && hle_puppet_owned(slot)) on.ai_sent++;
-            }
-        }
-    }
+    if (!race_running() || clock == on.last_sent) return;
+    int ai = clock >= on.last_ai_sent + AI_SNAPSHOT_TICKS || clock < on.last_ai_sent;
+    on.last_sent = clock;
+    if (ai) on.last_ai_sent = clock - clock % AI_SNAPSHOT_TICKS;
+    send_snapshots(ai);
     while ((n = hle_puppet_take_event(payload, sizeof payload)) > 0) send_event(payload, n);
     static double last_title;
     if (host_wall_seconds() - last_title > 1) {
@@ -1383,9 +1436,9 @@ static void state_sync(void)
                   on.nslots, lobby.ping_ms, lobby.offline ? " - offline" : "",
                   on.end_held ? " - finished, waiting for the others" : "");
         extern unsigned kernel_pace_late_ms;
-        fprintf(stderr, "online: race clock %d (%d fps), %u snapshots sent, %u received, hits taken %d, %u ms late, "
-                "lag (ms):%s\n", clock, port_fps(), on.sent, on.received, hle_puppet_hits_taken(),
-                kernel_pace_late_ms, lag);
+        fprintf(stderr, "online: race clock %d (%d fps), %u snapshots sent in %u messages, %u messages received, "
+                "hits taken %d, %u ms late, puppets shown behind/snapshot age (ms):%s\n", clock, port_fps(), on.sent,
+                on.bundles_sent, on.received, hle_puppet_hits_taken(), kernel_pace_late_ms, lag);
         if (on.end_held) fprintf(stderr, "online: watching: %u owned AI snapshots sent, phase %d\n", on.ai_sent, EE32(PHASE));
         static double last_ping;
         if (last_title - last_ping >= 10) last_ping = last_title, log_pings(&lobby);

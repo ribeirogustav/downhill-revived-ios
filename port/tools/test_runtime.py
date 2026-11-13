@@ -90,6 +90,9 @@ def guest_tests():
     run('keyboard', [HLE / 'keyboard.c', HLE / 'test_keyboard.c'])  # layout and steering ramp (finding 059)
     run('sif', [HLE / 'sif.c', HLE / 'test_sif.c'])
     run('pad-snapshot', [HLE / 'test_pad_snapshot.c'])
+    run('state-bundle', [HLE / 'test_state_bundle.c'])  # STATE bundles fit a datagram (finding 169)
+    run('online-start', [HLE / 'test_online_start.c'])  # no solo start (finding 187)
+    run('puppet-predict', [HLE / 'test_puppet_predict.c'])  # puppets shown at the present (finding 169)
     run('timer', [HLE / 'timer.c', HLE / 'test_timer.c'])
     run('sound', [HLE / 'sound.c', HLE / 'test_sound.c'], defines=['SND_NO_HOST'])
 
@@ -138,7 +141,7 @@ def main():
     guest_tests()
     host_tests()
     scripts = ['test_rider_time', 'test_rider_interaction', 'test_npc_animation', 'test_rider_input', 'test_float',
-               'test_port_headers', 'test_patch_guard']
+               'test_port_headers', 'test_patch_guard', 'test_rustgs_key']
     if os.environ.get('DHD_PCSX2_VU'):
         scripts += ['test_vu1_pcsx2', 'test_vu0_pcsx2']
     for script in scripts:

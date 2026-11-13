@@ -1,10 +1,11 @@
-/* A command-line player for testing the relay: it joins a room through net.h as the game does,
+/* A command-line player for testing rooms and races: it joins a room through net.h as the game does,
    and in the race replays a recorded rider (--replay, port/tools/online_race.py's bots) or just
    stays in it for --seconds, counting the others' frames; then it prints a RESULT line and leaves.
 
    usage: nettool [--server URL] [--name NAME] [--seconds S] [--version V --iso SHA256]
                   [--replay FILE --rider N] [--pick N] [--ready-after S] [--races N] [--echo-ai] [--finish-after S | --give-up-after S]
-                  host [--players N] [--code-file PATH] [--public] | join CODE | list
+                  host [--players N] [--code-file PATH] [--public | --p2p] | join CODE | list
+   --p2p makes a P2P room (finding 180); a join goes to a P2P room when its code has 7 characters.
    The server is --server or DHD_NET_SERVER (ws://127.0.0.1:8787 for wrangler dev). With the
    game's --version and --iso hash it can join a room of real games (finding 041). */
 #include <windows.h>
@@ -14,6 +15,7 @@
 #include <string.h>
 
 #include "net.h"
+#include "../hle/state_bundle.h"
 
 static void wait_for(int (*done)(const NetLobby *), double seconds, const char *what)
 {
@@ -42,13 +44,40 @@ static int all_ready(const NetLobby *l)
 }
 static int racing(const NetLobby *l) { return l->state == NET_RACING; }
 
-/* --replay FILE (with --bot): a player of a state-sync race (port/hle/online.c, finding 047)
+/* --replay FILE: a player of a state-sync race (port/hle/online.c, finding 047)
    without a game. It says it has loaded and what it rides, takes the race's GO from the first
-   game's GO event, then sends the snapshots a game recorded (DHD_NET_RECORD) as its own rider when
-   the race time reaches each one's (ms, finding 114), and its finish when they run out. */
+   game's GO event, then sends the snapshots a game recorded (DHD_NET_RECORD: bundles of the game's
+   own rider alone, port/hle/state_bundle.h) as its own rider, stamped now, when the race time
+   reaches each one's (ms, finding 114), and its finish when they run out. */
 enum { EVENT_VERSION = 2, EVENT_LOADED = 2, EVENT_SETUP = 3, EVENT_START = 4, EVENT_GO = 5, EVENT_FINISH = 6, EVENT_RESULTS = 7 };
 
 static void put32(uint8_t *o, int32_t v) { memcpy(o, &v, 4); }
+
+/* One rider's record from a received STATE bundle sent again as this player's own rider (a bundle of
+   one, stamped now), moved dx along x: 1 when sent. */
+static int resend_rider(const uint8_t *in, int n, int rider, int as, float dx)
+{
+    double stamp;
+    if (!state_bundle_check(in, n, &stamp)) return 0;
+    for (int at = STATE_BUNDLE_HEADER; at < n;) {
+        int size = state_record_size(in + at, n - at);
+        if (in[at] == rider) {
+            uint8_t out[STATE_BUNDLE_MAX];
+            float x;
+            memcpy(out, in, STATE_BUNDLE_HEADER);
+            memcpy(out + STATE_BUNDLE_HEADER, in + at, size);
+            out[1] = 0, out[2] = 1, out[STATE_BUNDLE_HEADER] = (uint8_t)as;
+            stamp = net_server_ms();
+            memcpy(out + 3, &stamp, 8);
+            memcpy(&x, out + STATE_BUNDLE_HEADER + 5, 4);
+            x += dx;
+            memcpy(out + STATE_BUNDLE_HEADER + 5, &x, 4);
+            return net_send_frame(NET_FRAME_STATE, out, STATE_BUNDLE_HEADER + size) != 0;
+        }
+        at += size;
+    }
+    return 0;
+}
 
 static int replay(const char *path, int slot, int rider, double seconds)
 {
@@ -81,11 +110,15 @@ static int replay(const char *path, int slot, int rider, double seconds)
             uint16_t len;
             int32_t when;
             memcpy(&len, data + at, 2);
-            if (at + 2 + len > size || len < 6) { at = size; break; }
-            memcpy(&when, data + at + 4, 4);
+            uint8_t *bundle = data + at + 2;
+            double stamp;
+            if (at + 2 + len > size || !state_bundle_check(bundle, len, &stamp) || bundle[2] != 1) { at = size; break; }
+            memcpy(&when, bundle + STATE_BUNDLE_HEADER + 1, 4);
             if (when > clock) break;
-            data[at + 3] = (uint8_t)slot;  /* the rider is this player's */
-            net_send_frame(NET_FRAME_STATE, data + at + 2, len);
+            bundle[STATE_BUNDLE_HEADER] = (uint8_t)slot;  /* the rider is this player's */
+            stamp = net_server_ms();
+            memcpy(bundle + 3, &stamp, 8);
+            net_send_frame(NET_FRAME_STATE, bundle, len);
             last_clock = when, sent++, at += 2 + len;
         }
         if (go && at + 2 > size && last_clock) {
@@ -112,6 +145,7 @@ int main(int argc, char **argv)
     int pick = -1;            /* --pick N: the lobby's rider number (1..16); 0 stays choosing */
     double ready_after = 0;   /* --ready-after S: Ready after S seconds; below 0 never */
     int i, slot, races = 0, public_room = 0;  /* --public: the host's room is on the public list */
+    int p2p = 0;              /* --p2p: the host's room is a P2P one */
     double finish_after = -1, back_after = -1;
     uint8_t frame[NET_FRAME_MAX];
     double until;
@@ -123,7 +157,6 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--code-file") && i + 1 < argc) code_file = argv[++i];
         else if (!strcmp(argv[i], "--version") && i + 1 < argc) version = argv[++i];
         else if (!strcmp(argv[i], "--iso") && i + 1 < argc) iso = argv[++i];
-        else if (!strcmp(argv[i], "--bot")) ;  /* (older scripts' flag; nothing to do) */
         else if (!strcmp(argv[i], "--follow-host")) follow_host = 1;
         else if (!strcmp(argv[i], "--replay") && i + 1 < argc) replay_file = argv[++i];
         else if (!strcmp(argv[i], "--rider") && i + 1 < argc) rider = atoi(argv[++i]);
@@ -133,6 +166,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--races") && i + 1 < argc) races = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--echo-ai")) echo_ai = 1;
         else if (!strcmp(argv[i], "--public")) public_room = 1;
+        else if (!strcmp(argv[i], "--p2p")) p2p = 1;
         else if (!strcmp(argv[i], "--finish-after") && i + 1 < argc) finish_after = atof(argv[++i]);
         else if (!strcmp(argv[i], "--give-up-after") && i + 1 < argc) back_after = atof(argv[++i]);
         else if (!mode) mode = argv[i];
@@ -140,7 +174,7 @@ int main(int argc, char **argv)
     }
     if (!mode || (!strcmp(mode, "join") && !code)) {
         printf("usage: nettool [--server URL] [--name NAME] [--seconds S] [--version V --iso SHA256]\n"
-               "               [--replay FILE --rider N] [--pick N] [--ready-after S] [--races N] [--echo-ai] [--finish-after S | --give-up-after S] host [--players N] [--code-file PATH] [--public] | join CODE | list\n");
+               "               [--replay FILE --rider N] [--pick N] [--ready-after S] [--races N] [--echo-ai] [--finish-after S | --give-up-after S] host [--players N] [--code-file PATH] [--public | --p2p] | join CODE | list\n");
         return 2;
     }
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -155,7 +189,7 @@ int main(int argc, char **argv)
                    info[i].version, info[i].region[0] ? info[i].region : "-", info[i].colo[0] ? info[i].colo : "-");
         return n < 0;
     }
-    if (!strcmp(mode, "host") ? net_create_room() : net_join_room(code)) {
+    if (!strcmp(mode, "host") ? net_create_room(p2p) : net_join_room(code)) {
         printf("FAILED: bad code or no server (set DHD_NET_SERVER)\n");
         return 1;
     }
@@ -202,9 +236,14 @@ int main(int argc, char **argv)
                 net_send_frame(NET_FRAME_EVENT, e, sizeof e);
             }
             was_racing = l.state == NET_RACING;
-            if (l.state == NET_RACING && !acted && now - loaded_at >= 0.5) {
-                /* "loaded", as a game says it until GO: the games' start needn't wait 60 s for this one */
-                uint8_t e[2] = {EVENT_VERSION, EVENT_LOADED};
+            if (l.state == NET_RACING && !acted && now - loaded_at >= 2) {
+                /* "loaded", as a game says it until GO: the games' start needn't wait 60 s for this one;
+                   and its rider again: a game still in its menus keeps only its newest 128 frames
+                   (NET_RELAY_QUEUE), and a burst of bots' messages can push a rider's one out. Every
+                   2 s: a game sends each once, so a room of bots must not flood the slow loaders. */
+                uint8_t e[2] = {EVENT_VERSION, EVENT_LOADED}, ride[30] = {EVENT_VERSION, EVENT_SETUP};
+                put32(ride + 2, 0x20 * (rider + 1)), put32(ride + 6, rider), put32(ride + 18, 8), put32(ride + 22, 3);
+                net_send_frame(NET_FRAME_EVENT, ride, sizeof ride);
                 net_send_frame(NET_FRAME_EVENT, e, 2);
                 loaded_at = now;
                 /* the host's start, as a host game's start_step says it once the others loaded: a
@@ -239,25 +278,8 @@ int main(int argc, char **argv)
             }
             while ((n = net_receive_frame(frame, sizeof frame)) > 0) {
                 received++;
-                if (follow_host && frame[0] == NET_FRAME_STATE && frame[1] == 0) {
-                    for (int at = 2; at < n;) {
-                        int size = frame[at++];
-                        if (size < 18 || at + size > n) break;
-                        if (frame[at] == 3 && frame[at+1] == 0) {
-                            uint8_t moving[256];
-                            moving[0] = (uint8_t)size;
-                            memcpy(moving + 1, frame + at, size);
-                            moving[2] = (uint8_t)l.local_slot;
-                            float x;
-                            memcpy(&x, moving + 7, 4);
-                            x += 6.0f * l.local_slot;
-                            memcpy(moving + 7, &x, 4);
-                            followed += net_send_frame(NET_FRAME_STATE, moving, size + 1) != 0;
-                            break;
-                        }
-                        at += size;
-                    }
-                }
+                if (follow_host && frame[0] == NET_FRAME_STATE && frame[1] == 0)
+                    followed += resend_rider(frame + 2, n - 2, 0, l.local_slot, 6.0f * l.local_slot);
                 if (frame[0] == NET_FRAME_EVENT && n >= 4 && frame[2] == EVENT_VERSION && frame[3] == EVENT_LOADED) others_loaded = 1;
                 if (echo_ai && !saw_go && frame[0] == NET_FRAME_EVENT && n >= 12 &&
                     frame[2] == EVENT_VERSION && frame[3] == EVENT_GO) {
@@ -267,27 +289,11 @@ int main(int argc, char **argv)
                     saw_go = 1;
                 }
                 /* Mirror a distinct host-owned AI's live snapshots. This exercises actual
-                   puppet playback with no stored game data in the test fixture.
-                   STATE payload: [length][version, global rider, time, position, ...]. */
-                if (echo_ai && saw_go && !acted && l.state == NET_RACING && frame[0] == NET_FRAME_STATE) {
-                    for (int at = 2; at < n; ) {
-                        int size = frame[at];
-                        if (size < 18 || at + 1 + size > n) break;
-                        const uint8_t *snapshot = frame + at + 1;
-                        if (snapshot[1] == l.nslots + l.local_slot - 1) {
-                            uint8_t copy[256];
-                            memcpy(copy, frame + at, size + 1);
-                            copy[2] = (uint8_t)l.local_slot;
-                            float x;
-                            memcpy(&x, copy + 7, sizeof x);
-                            x += 2.0f * l.local_slot;
-                            memcpy(copy + 7, &x, sizeof x);
-                            if (net_send_frame(NET_FRAME_STATE, copy, size + 1)) echoed++;
-                            break;
-                        }
-                        at += 1 + size;
-                    }
-                }
+                   puppet playback with no stored game data in the test fixture. */
+                /* The AI riders follow the humans (ten in all): with many humans, bots share them. */
+                if (echo_ai && saw_go && !acted && l.state == NET_RACING && frame[0] == NET_FRAME_STATE && l.nslots < NET_MAX_SLOTS)
+                    echoed += resend_rider(frame + 2, n - 2, l.nslots + (l.local_slot - 1) % (NET_MAX_SLOTS - l.nslots),
+                                           l.local_slot, 2.0f * l.local_slot);
             }
             Sleep(10);
         }

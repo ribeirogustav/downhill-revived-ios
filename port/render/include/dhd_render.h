@@ -28,7 +28,7 @@
 extern "C" {
 #endif
 
-#define DHDR_ABI_VERSION 1u
+#define DHDR_ABI_VERSION 3u
 
 #if defined(__wasm__)
 #define DHDR_FN(name) __attribute__((import_module("dhd_render"), import_name(#name)))
@@ -46,7 +46,7 @@ void dhd_host_log(const char *line, size_t bytes);
 /* ---------------- device: one per process, never released ---------------- */
 
 enum { DHDR_DEV_VULKAN = 1, DHDR_DEV_FXC = 2, DHDR_DEV_DEBUG = 4, DHDR_DEV_VALIDATION = 8,
-       DHDR_DEV_FALLBACK = 16, DHDR_DEV_NO_DUAL_SOURCE = 32 };
+       DHDR_DEV_FALLBACK = 16, DHDR_DEV_NO_DUAL_SOURCE = 32, DHDR_DEV_DUAL_SOURCE = 64 };
 enum { DHDR_LOG_ERROR = 1, DHDR_LOG_WARN = 2, DHDR_LOG_INFO = 3 };
 enum { DHDR_FEAT_DUAL_SOURCE = 1, DHDR_FEAT_RENDER_PIPELINES = 2 };
 typedef struct DhdrDeviceDesc {
@@ -54,7 +54,9 @@ typedef struct DhdrDeviceDesc {
     uint32_t abi;                    /* DHDR_ABI_VERSION; init fails (logged) on another size or abi */
     uint32_t flags;                  /* DHDR_DEV_*: DHD_WGPU_BACKEND=vulkan, DHD_WGPU_COMPILER=fxc,
                                         DHD_WGPU_DEBUG (DEBUG | VALIDATION), WARP adapter (FALLBACK),
-                                        DHD_WGPU_DUAL_SOURCE=0 (NO_DUAL_SOURCE) */
+                                        DHD_WGPU_DUAL_SOURCE=0 (NO_DUAL_SOURCE), =1 (DUAL_SOURCE:
+                                        used on Intel GPUs too, where it is off by default,
+                                        finding 188) */
     uint32_t vendor_id, device_id;   /* PCI ids of the presentation adapter; 0, 0: high performance */
     uint32_t log_level;              /* DHDR_LOG_*: the most verbose wgpu/naga level forwarded */
     const char *dxc_path;            /* UTF-8 path of dxcompiler.dll beside the exe, or NULL (FXC) */
@@ -66,7 +68,8 @@ typedef struct DhdrDeviceDesc {
 DHDR_FN(dhdr_device_init)     int dhdr_device_init(const DhdrDeviceDesc *d);
 /* The adapter's name, NUL-terminated, valid for the process ("" before init). */
 DHDR_FN(dhdr_adapter_name)    const char *dhdr_adapter_name(void);
-/* DHDR_FEAT_*: DUAL_SOURCE = dual-source blending offered and not refused by the flags;
+/* DHDR_FEAT_*: DUAL_SOURCE = dual-source blending used (offered, not refused by the flags, not an
+   Intel GPU unless forced; Rust's device::dual_source);
    RENDER_PIPELINES = a probe render pipeline was built. 0 before init. */
 DHDR_FN(dhdr_device_features) uint32_t dhdr_device_features(void);
 /* "dhd_render 1.0 wgpu 29.0.3 core 29.0.3 naga 29.0.3", NUL-terminated, static. */
@@ -157,8 +160,13 @@ DHDR_FN(dhdr_surface_usage)   uint32_t dhdr_surface_usage(const DhdrSurface *s);
 DHDR_FN(dhdr_present_exact)   int dhdr_present_exact(DhdrSurface *s, DhdrExact *x, const uint32_t *pixels,
                                                      uint32_t w, uint32_t h, uint32_t window_w, uint32_t window_h);
 /* Presents the texture the last call that returned 1 drew (SurfaceTexture::present). */
-/* Live presenter overlay; ping < 0 hides the online line, seconds is monotonic wall time. */
-DHDR_FN(dhdr_surface_counter) void dhdr_surface_counter(DhdrSurface *s, int enabled, int ping, double seconds);
+/* Live presenter overlay: frames a second, then the online lines, each hidden when its value is
+   < 0 (finding 181): "SERVER n MS", server_ms the round trip to the room's server; then in a race
+   "RIDERS n MS", riders_ms how old the other riders' snapshots are on arrival (finding 169), else
+   "RACE n MS", race_ms the round trip to Cloudflare's race network (the SFU). seconds is
+   monotonic wall time. */
+DHDR_FN(dhdr_surface_counter) void dhdr_surface_counter(DhdrSurface *s, int enabled, int server_ms, int race_ms, int riders_ms,
+                                                        double seconds);
 /* The touch controls' overlay (finding 141) for the next pictures: count shapes of 16 floats each
    (kind, x, y, a, b, c, d, 0, fill r g b a, line r g b a; port/hle/touch.h's TouchShape in mm and
    colours 0..1) on a screen width_mm x height_mm; count 0 hides it. The data is copied. */
@@ -187,6 +195,7 @@ typedef struct DhdrNativeConstants { /* == NativeConstants; native.wgsl's unifor
     float fog[4];
     int32_t tex_offset[2];
     uint32_t tex_size[2], wrap[4], region[4];
+    float mesh_offset[4];            /* a mesh draw's (flag 4096; findings 164, 168): offset, largest Z, Z scale */
 } DhdrNativeConstants;
 typedef struct DhdrConvertConstants { /* == NativeConvertConstants; native_convert's uniform block */
     uint32_t tex[4], size[4];

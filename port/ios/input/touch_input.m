@@ -498,7 +498,7 @@ void touch_input_set_config(const TouchConfig *cfg) {
         c->x = touch_clamp(c->x, 0, 1, .5f);
         c->y = touch_clamp(c->y, 0, 1, .5f);
         c->radius = touch_clamp(c->radius, 1, 300, DEFAULT_BUTTON_RADIUS);
-        c->scale = touch_clamp(c->scale, .1f, 5, 1);
+        c->scale = touch_clamp(c->scale, .1f, 6, 1);
     }
     os_unfair_lock_unlock(&s_lock);
 }

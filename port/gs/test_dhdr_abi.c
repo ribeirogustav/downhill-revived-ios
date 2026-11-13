@@ -22,7 +22,7 @@
         F(DhdrNativeConstants, atst) F(DhdrNativeConstants, aref) F(DhdrNativeConstants, alpha_scale) \
         F(DhdrNativeConstants, texa_alpha) F(DhdrNativeConstants, scale) F(DhdrNativeConstants, fog) \
         F(DhdrNativeConstants, tex_offset) F(DhdrNativeConstants, tex_size) F(DhdrNativeConstants, wrap) \
-        F(DhdrNativeConstants, region) \
+        F(DhdrNativeConstants, region) F(DhdrNativeConstants, mesh_offset) \
     S(DhdrConvertConstants) F(DhdrConvertConstants, tex) F(DhdrConvertConstants, size) \
         F(DhdrConvertConstants, slot) F(DhdrConvertConstants, pages) F(DhdrConvertConstants, palette) \
     S(DhdrCommand) F(DhdrCommand, kind) F(DhdrCommand, depth_key) F(DhdrCommand, color_mask) F(DhdrCommand, pad) \
@@ -49,7 +49,7 @@
         F(DhdrPresentRect, window_h) F(DhdrPresentRect, resize) F(DhdrPresentRect, fill) \
     C(DHDR_ABI_VERSION) \
     C(DHDR_DEV_VULKAN) C(DHDR_DEV_FXC) C(DHDR_DEV_DEBUG) C(DHDR_DEV_VALIDATION) C(DHDR_DEV_FALLBACK) \
-    C(DHDR_DEV_NO_DUAL_SOURCE) \
+    C(DHDR_DEV_NO_DUAL_SOURCE) C(DHDR_DEV_DUAL_SOURCE) \
     C(DHDR_LOG_ERROR) C(DHDR_LOG_WARN) C(DHDR_LOG_INFO) \
     C(DHDR_FEAT_DUAL_SOURCE) C(DHDR_FEAT_RENDER_PIPELINES) \
     C(DHDR_B_VRAM) C(DHDR_B_SNAPSHOT) C(DHDR_B_STATES) C(DHDR_B_PRIMITIVES) C(DHDR_B_BINS) C(DHDR_B_DISPLAY) \

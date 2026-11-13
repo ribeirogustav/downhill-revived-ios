@@ -14,7 +14,12 @@ What you need
   WebKitGTK 4.1 from your distribution: libwebkit2gtk-4.1-0, already there with GNOME).
   The Mac and Linux builds are experimental: they may have problems the Windows build doesn't.
   Please report them with your dhd.log.
-  There is also an experimental Android build (an .apk on the release page), without online play.
+  There is also an experimental Android build (an .apk on the release page); its online play is
+  P2P races only (below).
+- Speed: about 60 fps at 1x-2x needs a 4-thread CPU from about 2016 and integrated graphics such
+  as Intel UHD 620 or AMD Vega 8 with 4 GB RAM; 4x and up wants a 6-core CPU and a GTX 1060 /
+  RX 580 class card or better. On Android: a Helio G80 / Snapdragon 680 class phone with 4 GB RAM,
+  with Performance Mode on. The full table is in docs/PLAYING.md ("System requirements").
 - Your own dump of the Downhill Domination USA disc (SCUS-97177) as an .iso file. Other regions
   and modified images are refused.
 
@@ -89,7 +94,8 @@ buttons; the keys above stand for them.
 Your own keys and buttons: REVIVED SETTINGS > Controls in the game, or the launcher's Settings >
 Controls > Bindings. Choose the key or controller button for each PlayStation button, a main and
 an alternate, for the keyboard and for each of two controllers (player 1 and player 2), plus
-Swap Sticks and Invert per stick axis on a controller. In the game, Cross on a button's row waits
+Swap Sticks, Swap L1/L2, Swap R1/R2 (for pads that report a shoulder as its trigger) and Invert
+per stick axis on a controller. In the game, Cross on a button's row waits
 up to five seconds for the new key or button (Esc cancels), Square clears it, Triangle or Esc goes
 back; changes save at once. The dimmed "also" binding is the alternate, changed in the launcher
 (click a slot, right-click clears; the game takes it at its next start). A key or button another
@@ -102,7 +108,18 @@ Settings: OPTIONS > REVIVED SETTINGS in the game's menu, the first row, with Dis
 Controls, Online and Game tabs (L1/R1 switch them): resolution, display mode, window size,
 picture shape, scaling, widescreen, skip movies, vibration, dead zone, button icons, your keys
 and buttons, the size of online riders' names (Off, Small, Medium as the original, Large),
-texture pack, font. Changes are saved to dhd.ini.
+texture pack, font, the Performance group, Native VU, FPS & Ping (frames a second; online the round trip
+to the room's server, "SERVER N MS", and to the race network, "RACE N MS"; in a race "RIDERS N
+MS", how old the other riders' positions are when they arrive). Changes are saved to dhd.ini.
+Performance (Graphics tab): Performance Mode ON turns off the riders' shadows and the sun's glow,
+the lens flare's ghosts and the particles (dust, dirt, spray), which runs faster on slower PCs and
+phones; each of the three can also be set alone (dhd.ini shadows, lens_flare, particles = 0).
+They change only the picture, at once, online too.
+Native VU (Graphics tab; the launcher's Graphics page too): the PS2's VU1 programs that place the
+world, the lit objects and the shadows run on your graphics card instead of being emulated, which
+is faster. It is on by default (dhd.ini native_vu = on or off); it changes only the picture, at
+once, online too. If your graphics card can't run it, the game says so in dhd.log and goes on
+without it. If something in the picture looks wrong, turn it OFF and send us your dhd.log.
 
 Font: the game's text is drawn with sharp edges at any resolution ("font = sharp", the
 default). The sharp font is made in memory from the font on your disc each time the game
@@ -149,13 +166,23 @@ In dhd.ini:
 Online races (experimental)
 Choose ONLINE in the main menu: create a public or private race, or join one from the list or
 with its code. It works out of the box, on the project's official server
-(wss://dhd.skuza.app). Every player needs the same USA disc image,
-and the newest version of the game (0.7.12 can't race with 0.7.11 or older): an older one is
-told "A new version is out. Update to play online." and offered Update Now, which closes the game
-and lets the launcher update it.
+(wss://dhd.skuza.app). Every player in a room needs the same USA disc image and the same release
+of the game: a room of another release shows as OTHER VERSION in the list. A release the server
+no longer takes is told "A new version is out. Update to play online." and offered Update Now,
+which closes the game and lets the launcher update it.
 In a race the riders' data goes over Cloudflare's network, from the Cloudflare location nearest
 to you (UDP); where a network blocks UDP the game falls back to an encrypted connection on port
 443 by itself.
+Room Region (a row of the ONLINE menu, dhd.ini room_region): where the rooms you create run.
+Auto picks by the Cloudflare location you reach; or choose EU West, EU East, NA East, NA West,
+Asia NE, Asia SE or Oceania.
+P2P races (ONLINE > Create A P2P Race): a private room, joined with its 7-character code, whose
+race data goes directly between the players' games. One game, the hub (the creator first, the
+next player if it leaves), passes the others' data on; a player who can't reach it races over
+Cloudflare's network in the same room. The room, its rules and the results still run on the
+server. In a P2P room the other players can see your network (IP) address: the game says so when
+you create or join one. Play P2P races with people you trust. On Android, P2P races are the only
+online races so far.
 Running your own server is optional: put its address on the "server =" line of dhd.ini, e.g.
     server = wss://races.example.org
 A server of your own can keep an older version playing (its MIN_VERSION setting); then point
@@ -164,7 +191,8 @@ What the official server keeps, against cheaters and abuse: a log of who joined 
 time, the room, your rider name, the game's version, your country, a keyed hash of your internet
 address, never the address itself, and the game's install id, a random number kept in dhd.ini
 as install_id), deleted after 14 days; bans go by that hash or install id, until they end. No
-other player ever sees your address, its hash or your install id.
+other player ever sees your address's hash or your install id, and outside P2P rooms no other
+player sees your address.
 
 Known gaps
 - The 2-4 player split screens have not been checked in widescreen.

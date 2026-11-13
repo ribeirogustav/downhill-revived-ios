@@ -170,8 +170,54 @@ struct LayoutChecks {
             for control in checked.controls {
                 assert(control.x.isFinite && (0...1).contains(control.x))
                 assert(control.y.isFinite && (0...1).contains(control.y))
-                assert(control.scale == 0.6)
+                assert(control.scale == TouchControlPlacement.minimumScale)
             }
+        case "scale600":
+            for orientation in TouchLayoutOrientation.allCases {
+                var layout = TouchLayout.defaults(orientation)
+                let cross = layout.controls.firstIndex { $0.slot == .cross }!
+                let circle = layout.controls.firstIndex { $0.slot == .circle }!
+                layout.controls[cross].scale = 6.0
+                layout.controls[circle].scale = 0.25
+                let validated = layout.sanitized(orientation)
+                assert(placement(validated, .cross).scale == 6.0)
+                assert(placement(validated, .circle).scale == 0.25)
+                assert(placement(validated, .triangle).scale == 1.0)
+                assert(placement(validated, .cross).size(fit: 1).width == 300)
+                assert(placement(validated, .circle).size(fit: 1).width == 12.5)
+                // A migrated layout may carry a shared scale greater than 1.
+                layout.baseScale = 1.8
+                assert(placement(layout, .cross).size(fit: 1, baseScale: layout.baseScale).width == 540)
+                layout.controls[cross].scale = 99
+                assert(placement(layout.sanitized(orientation), .cross).scale == 6.0)
+                layout.controls[cross].scale = .nan
+                assert(placement(layout.sanitized(orientation), .cross).scale == 1)
+            }
+            let store = TouchLayoutStore(directory: directory)
+            var draft = store.configuration
+            draft.portrait.controls[1].scale = 6.0
+            draft.landscape.controls[2].scale = 0.25
+            try store.save(draft)
+            let again = TouchLayoutStore(directory: directory)
+            assert(again.configuration.portrait.controls[1].scale == 6.0)
+            assert(again.configuration.landscape.controls[2].scale == 0.25)
+        case "ipad":
+            var config = TouchLayoutConfiguration()
+            assert(config.ipadLandscape.baseScale == 1.25)
+            assert(config.ipadPortrait.baseScale == 1.25)
+            assert(config.ipadLandscape.hasEssentialControls)
+            config[.landscape, pad: true].controls[1].scale = 6
+            assert(config[.landscape, pad: false].controls[1].scale == 1)
+            let data = try JSONEncoder().encode(config)
+            let decoded = try JSONDecoder().decode(TouchLayoutConfiguration.self, from: data)
+            assert(decoded == config)
+            var object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+            object.removeValue(forKey: "ipadLandscape")
+            object.removeValue(forKey: "ipadPortrait")
+            let old = try JSONSerialization.data(withJSONObject: object)
+            let compatible = try JSONDecoder().decode(TouchLayoutConfiguration.self, from: old)
+            assert(compatible.ipadPortrait == TouchLayout.ipadDefaults(.portrait))
+            assert(compatible.ipadLandscape == TouchLayout.ipadDefaults(.landscape))
         case "persistence":
             let store = TouchLayoutStore(directory: directory)
             assert(store.configuration == TouchLayoutConfiguration())
@@ -257,7 +303,7 @@ struct LayoutChecks {
 '''
 
 
-@unittest.skipUnless(sys.platform == 'darwin' and SWIFTC, 'requires macOS Swift and Combine')
+@unittest.skipUnless(SWIFTC, 'requires a Swift compiler')
 class TouchLayoutChecks(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -267,8 +313,24 @@ class TouchLayoutChecks(unittest.TestCase):
         source.write_text(HARNESS)
         cls.binary = Path(cls.directory.name) / 'checks'
         launcher = ROOT / 'port/ios/launcher'
-        subprocess.run([SWIFTC, '-swift-version', '5',
-                        str(launcher / 'TouchLayout.swift'), str(launcher / 'TouchLayoutStore.swift'),
+        model = launcher / 'TouchLayout.swift'
+        store = launcher / 'TouchLayoutStore.swift'
+        if sys.platform != 'darwin':
+            # Verify the production Swift geometry and JSON logic on Linux;
+            # only unavailable Apple SDK imports are substituted.
+            modelText = model.read_text().replace('import CoreGraphics', '// Foundation exports CGRect on Linux')
+            storeText = store.read_text().replace('import Combine', '''
+protocol ObservableObject: AnyObject {}
+@propertyWrapper struct Published<Value> {
+    var wrappedValue: Value
+    init(wrappedValue: Value) { self.wrappedValue = wrappedValue }
+}
+''')
+            model = Path(cls.directory.name) / 'TouchLayout.swift'
+            store = Path(cls.directory.name) / 'TouchLayoutStore.swift'
+            model.write_text(modelText)
+            store.write_text(storeText)
+        subprocess.run([SWIFTC, '-swift-version', '5', str(model), str(store),
                         str(source), '-o', str(cls.binary)], check=True, timeout=120)
 
     def run_check(self, name):
@@ -285,6 +347,12 @@ class TouchLayoutChecks(unittest.TestCase):
 
     def test_corrupt_values_and_duplicate_actions_are_repaired(self):
         self.run_check('sanitize')
+
+    def test_per_control_scale_600_and_orientation_persistence(self):
+        self.run_check('scale600')
+
+    def test_ipad_defaults_are_independent_and_legacy_json_decodes(self):
+        self.run_check('ipad')
 
     def test_save_round_trip_and_failed_writes_preserve_active_layout(self):
         self.run_check('persistence')

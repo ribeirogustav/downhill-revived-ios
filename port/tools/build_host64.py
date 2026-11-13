@@ -72,19 +72,21 @@ class Target:
         self.key, self.rust, self.out, self.exe, self.jobs, self.outputs = key, rust, out, exe, jobs, outputs
         self.fiber = fiber  # the fiber switch's adapter, port/host64/fiber_<fiber>.c (the CPU and its ABI)
         self.flags, self.wabt, self.simde = list(flags), Path(os.environ.get('WABT_DIR') or wabt), simde
-        self.windows, self.android, self.mac, self.ios = key == 'win-x64', key == 'android-arm64', key == 'macos-arm64', key == 'ios-arm64'
+        self.windows, self.android, self.mac, self.ios, self.switch = (
+            key == 'win-x64', key == 'android-arm64', key == 'macos-arm64', key == 'ios-arm64', key == 'switch-arm64'
+        )
         self.posix = not self.windows
 
 
 MAC_MIN = '11.0'  # the first macOS on Apple silicon (package_release.py's LSMinimumSystemVersion)
 IOS_MIN = '17.0'  # iOS deployment target (iPhone 17 Pro Max support)
-ANDROID_API = 30  # sdl3.ANDROID_API: Android 11
 IOS_SYSROOT = ''
 try:
     IOS_SYSROOT = subprocess.check_output(['xcrun', '--sdk', 'iphoneos', '--show-sdk-path'], text=True).strip()
 except Exception:
     pass
 
+ANDROID_API = 29  # sdl3.ANDROID_API: Android 10 (finding 191)
 TARGETS = {t.key: t for t in (
     Target('win-x64', 'x86_64-pc-windows-msvc', 'build/host64-exe', 'dhd64.exe', 'win64'),
     Target('linux-x64', 'x86_64-unknown-linux-gnu', 'build/host64-linux', 'dhd64', 'sysv64',
@@ -96,7 +98,13 @@ TARGETS = {t.key: t for t in (
     # iOS arm64 target for iPhone (iPhone 17 Pro Max / A19 Pro; -mcpu=apple-m1 floor as macOS)
     Target('ios-arm64', 'aarch64-apple-ios', 'build/host64-ios', 'libdhd_ios.a', 'arm64', jobs=4,
            flags=(['-isysroot', IOS_SYSROOT] if IOS_SYSROOT else []) + ['-arch', 'arm64', '-miphoneos-version-min=' + IOS_MIN, '-mcpu=apple-m1', '-fPIC'],
-           wabt=Path.home() / 'DevCaches/wabt/wabt-1.0.42', simde=Path.home() / 'DevCaches/simde-src'),
+           wabt=ROOT / 'port/third_party/wabt', simde=Path.home() / 'DevCaches/simde-src'),
+    # Nintendo Switch arm64 target for Homebrew (Horizon OS / Tegra X1 Cortex-A57)
+    Target('switch-arm64', 'aarch64-unknown-none', 'build/host64-switch', 'libdhd_switch.a', 'arm64', jobs=4,
+           flags=['-specs=/opt/devkitpro/libnx/switch.specs', '-march=armv8-a', '-mtune=cortex-a57', '-fPIE', '-D__SWITCH__',
+                  '-I/opt/devkitpro/libnx/include', '-I/opt/devkitpro/portlibs/switch/include'],
+           wabt=ROOT / 'port/third_party/wabt',
+           simde=ROOT / 'port/third_party/simde-src' if (ROOT / 'port/third_party/simde-src').exists() else Path.home() / 'DevCaches/simde-src'),
     # -march=armv8-a: every arm64 phone. ARMv8.2 (finding 091's first choice) closed the game at
     # start with SIGILL on ARMv8.0 cores, which budget chips still ship (the Snapdragon 680's
     # Cortex-A73/A53, issues #45 and #51; finding 155). -moutline-atomics keeps the ARMv8.1 atomics
@@ -125,7 +133,8 @@ def host_units(t):
 
 
 def glue(t):
-    return [SOURCE / n for n in ('guest_memory.c', 'guest_memory_%s.c' % ('win32' if t.windows else 'posix'),
+    mem_os = 'switch' if t.switch else 'win32' if t.windows else 'posix'
+    return [SOURCE / n for n in ('guest_memory.c', 'guest_memory_%s.c' % mem_os,
                                  'fiber.c', 'fiber_%s.c' % t.fiber, 'fp_mode.c', 'bridge.c', 'diagnostics.c',
                                  'launcher.c')]
 
@@ -146,6 +155,8 @@ def fiber_test(t, a, cc, wabt, out, env):
                'onecore.lib', '/subsystem:console']
     else:
         cmd = [cc, *t.flags, '-O2', '-pthread', *flags, *sources, '-o', exe] + (['-rdynamic'] if not t.mac else [])
+        if t.android:  # guest RAM's ashmem region on Android 10 (guest_memory_posix.c)
+            cmd.append('-landroid')
     r = subprocess.run(list(map(str, cmd)), cwd=out, env=env, capture_output=True, text=True, timeout=300)
     if r.returncode:
         raise RuntimeError(' '.join(map(str, cmd)) + '\n' + r.stdout + r.stderr)
@@ -170,6 +181,11 @@ def fiber_test(t, a, cc, wabt, out, env):
 def rust_library(t, work):
     """The Rust library's report (rustgs.build): here, or for linux-x64 in WSL without cargo, from
     rustgs.py on the Windows side (WSL's interop, python.exe)."""
+    if t.switch:
+        dummy_lib = work / 'libdhd_render_dummy.a'
+        if not dummy_lib.exists():
+            subprocess.run(['/opt/devkitpro/devkitA64/bin/aarch64-none-elf-ar', 'rcs', str(dummy_lib)], check=True)
+        return {'lib': dummy_lib, 'native_static_libs': []}
     import rustgs  # cargo through rustgs only (its flags, version gate, checks and cache)
     if t.key != 'linux-x64' or shutil.which('cargo') or not shutil.which('python.exe'):
         try:
@@ -190,6 +206,36 @@ def rust_library(t, work):
     return rep
 
 
+def pgo_keys(profile, tools):
+    """Refuses a profile whose static functions are keyed by a path, as every profile recorded
+    before finding 195 is (and one recorded by another tool may be): this build looks its static
+    functions up by file name, would find none of them, and would say nothing (the compiles run
+    with -w), so most of what the profile is for would be lost unnoticed. Read once per profile (a
+    note beside its copy in the work folder); without an llvm-profdata to read it with (the NDK has
+    one) nothing is checked."""
+    note = profile.with_suffix('.keys')
+    if note.exists():
+        return
+    show = tools / 'llvm-profdata.exe' if tools else shutil.which('llvm-profdata')
+    if not show or not Path(show).exists():
+        return
+    r = subprocess.run([str(show), 'show', '--all-functions', str(profile)], capture_output=True, text=True,
+                       encoding='utf-8', errors='replace')
+    if r.returncode:
+        raise RuntimeError('--pgo-use: llvm-profdata cannot read the profile: ' + r.stderr.strip()[-300:])
+    names = [line[2:-1] for line in r.stdout.splitlines()
+             if line.startswith('  ') and not line.startswith('   ') and line.endswith(':')]
+    static = [n.rsplit(';', 1)[0] for n in names if ';' in n]
+    with_path = sum('/' in unit or chr(92) in unit for unit in static)   # chr(92): a backslash
+    if with_path:
+        raise RuntimeError("--pgo-use: %d of the profile's %d static functions are keyed by a path, not by a file "
+                           'name: it was recorded by a build without -static-func-full-module-prefix=false '
+                           '(before finding 195), and this build would find none of them. Record a new one '
+                           '(docs/BUILDING.md, "Build times").' % (with_path, len(static)))
+    note.write_text('%d functions, %d static, keyed by file name\n' % (len(names), len(static)))
+    print('pgo: %d functions in the profile, %d static, keyed by file name' % (len(names), len(static)), flush=True)
+
+
 def sdl(t, a):
     """(SDL3's library, its include directory, the libraries it needs at link time)."""
     import sdl3
@@ -198,6 +244,12 @@ def sdl(t, a):
         return lib, include, []
     if t.ios:
         lib, include, libs = sdl3.ios_build()
+        return lib, include, libs
+    if t.switch:
+        lib = Path('/opt/devkitpro/portlibs/switch/lib/libSDL2.a')
+        include = Path('/opt/devkitpro/portlibs/switch/include')
+        libs = ['-L/opt/devkitpro/portlibs/switch/lib', '-L/opt/devkitpro/libnx/lib',
+                '-lSDL2', '-lEGL', '-lglapi', '-ldrm_nouveau', '-lnx', '-lstdc++', '-lm']
         return lib, include, libs
     if a.sdl_lib and not a.sdl_include:
         raise ValueError('--sdl-lib needs --sdl-include')
@@ -280,7 +332,7 @@ def main():
         p.error('--pgo-* are for the clang targets')
     jobs, outputs = a.jobs or t.jobs, a.num_outputs or t.outputs
     wabt = (a.wabt or t.wabt).resolve()
-    simde = a.simde or Path(os.environ.get('SIMDE_DIR') or t.simde or str(DEVCACHES / 'simde-src'))
+    simde = a.simde or Path(os.environ.get('SIMDE_DIR') or t.simde or ((ROOT / 'port/third_party/simde-src') if (ROOT / 'port/third_party/simde-src').exists() else (DEVCACHES / 'simde-src')))
     out = (a.out or ROOT / t.out).resolve()
     if out.drive.upper() == 'C:' or str(out).startswith('/mnt/c/'):
         p.error('build output must stay off C:')
@@ -309,7 +361,10 @@ def main():
             p.error('no NDK clang at %s' % cc)
     elif t.posix:
         ndk, tools = None, None
-        if (t.mac or t.ios) and sys.platform == 'darwin':
+        if t.switch:
+            cc = '/opt/devkitpro/devkitA64/bin/aarch64-none-elf-gcc'
+            ar = '/opt/devkitpro/devkitA64/bin/aarch64-none-elf-ar'
+        elif (t.mac or t.ios) and sys.platform == 'darwin':
             cc, ar = '/usr/bin/clang', '/usr/bin/ar'
         else:
             cc, ar = 'clang', 'ar'
@@ -408,7 +463,7 @@ def main():
         # guest address and ends the process, as the trap did. WABT's own fault-to-trap handler stays
         # off (WASM_RT_SKIP_SIGNAL_RECOVERY): ours handle faults. Traps can come from any EE fiber:
         # report and end (launcher.c).
-        memcheck = ['-DWASM_RT_MEMCHECK_BOUNDS_CHECK=1', '-DWASM_RT_SKIP_BOUNDS_CHECKS=1'] if t.ios else ['-DWASM_RT_MEMCHECK_GUARD_PAGES=1']
+        memcheck = ['-DWASM_RT_MEMCHECK_BOUNDS_CHECK=1', '-DWASM_RT_SKIP_BOUNDS_CHECKS=1'] if (t.ios or t.switch) else ['-DWASM_RT_MEMCHECK_GUARD_PAGES=1']
         defines = ['-DWASM_RT_STACK_DEPTH_COUNT=1', '-DWASM_RT_MAX_CALL_STACK_DEPTH=512', '-DWASM_RT_THREAD_LOCAL=',
                    *memcheck, '-DWASM_RT_SKIP_SIGNAL_RECOVERY=1']
         defines += ['-DHOST64_FAKE_MODULE=1'] if a.fake else ['-DWASM_RT_TRAP_HANDLER=host64_trap']
@@ -421,14 +476,22 @@ def main():
         maps += [(a.llvm, 'llvm')] if t.windows else [(ndk, 'ndk')] if t.android else [(simde, 'simde')]
         prefix_maps = ['-ffile-prefix-map=%s=%s' % (spelling, new) for old, new in maps
                        for spelling in dict.fromkeys((str(old), str(old).replace('\\', '/')))]  # a set's order varies
-        pgo_flags = []
+        # A static function's key in a profile is "<its unit's path>;<name>", the path as the compiler
+        # was given it, and -ffile-prefix-map does not touch it: a profile recorded in one checkout
+        # or build folder then matches no static function of a build made in another (finding 195:
+        # the VU1 kernels and translated blocks, the GS and graphics queue's helpers and every static
+        # function of the module's C went unprofiled in every build but the recording lane's own).
+        # With this the key is "<file name>;<name>", the same wherever the build is made; the
+        # recording build and the using build must both have it (pgo_flags[0] alone goes to the link).
+        pgo_flags, pgo_names = [], ['-mllvm', '-static-func-full-module-prefix=false']
         if a.pgo_generate:
-            pgo_flags = ['-fprofile-generate']
+            pgo_flags = ['-fprofile-generate', *pgo_names]
         elif a.pgo_use:  # copied under its hash, so the object cache keys follow its content
             data = a.pgo_use.read_bytes()
             profile = work / ('pgo-%s.profdata' % hashlib.sha256(data).hexdigest()[:16])
             profile.write_bytes(data)
-            pgo_flags = ['-fprofile-use=' + str(profile)]
+            pgo_keys(profile, tools if t.android else None)
+            pgo_flags = ['-fprofile-use=' + str(profile), *pgo_names]
         if t.windows:
             common = [a.llvm/'clang-cl.exe', '--target=x86_64-pc-windows-msvc', '/nologo',
                       '/O2', '/clang:-O3', '/clang:-march=x86-64-v2', '/clang:-mtune=znver3',
@@ -443,7 +506,8 @@ def main():
         else:
             # one section per function and datum, as the Windows build's /Gy: the link
             # garbage-collects what nothing references (/opt:ref there)
-            common = [cc, *t.flags, '-c', '-O3', '-ffp-model=strict', '-ffp-contract=off',
+            fp_flags = ['-frounding-math'] if t.switch else ['-ffp-model=strict']
+            common = [cc, *t.flags, '-c', '-O3', *fp_flags, '-ffp-contract=off',
                       '-ftrivial-auto-var-init=zero', '-fno-strict-aliasing', '-ffunction-sections',
                       '-fdata-sections', '-fwrapv', '-pthread', '-w', *pgo_flags, *defines, *includes,
                       *prefix_maps] + (['-gline-tables-only'] if a.debug else [])
@@ -458,8 +522,8 @@ def main():
                 extra += ['-DPS2_VU_AOT']
             if rel.endswith('gs/gpu_rust.c'):
                 extra += ['-I'+str(ROOT/'port/render/include')]  # dhd_render.h
-            if rel.endswith('host64/launcher.c') and (t.android or t.ios):
-                extra += ['-Dmain=dhd_launcher_main' if t.android else '-Dmain=dhd_main']
+            if rel.endswith('host64/launcher.c') and (t.android or t.ios or t.switch):
+                extra += ['-Dmain=dhd_launcher_main' if (t.android or t.switch) else '-Dmain=dhd_main']
             if 'libmpeg2/' in rel:
                 extra += ['-I'+str(ROOT/'port/third_party/libmpeg2')]
             obj = objdir/(rel.replace('/', '_') + suffix)
@@ -554,6 +618,10 @@ def main():
         elif t.ios:
             # Bundle all objects, host library, Rust renderer and SDL3 into one static archive for iOS
             cmd = ['libtool', '-static', '-o', str(exe), *objects, library, report['lib'], sdl_lib]
+            run(cmd, timeout=900)
+        elif t.switch:
+            # Bundle all objects and host library into one static archive for Switch
+            cmd = [ar, 'rcs', str(exe), *objects, library]
             run(cmd, timeout=900)
         else:
             # LLVM's lld: GNU ld on a tree under /mnt (WSL's 9p) took minutes, past the timeout;

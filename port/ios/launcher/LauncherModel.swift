@@ -92,7 +92,8 @@ public enum LauncherRoute: String, Hashable, CaseIterable {
 public class LauncherModel: ObservableObject {
     public static let shared = LauncherModel()
 
-    public let appVersion = "0.7.12 (iOS r6)"
+    public let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
+        as? String ?? "0.7.16"
 
     @Published var autoStartGame = UserDefaults.standard.bool(forKey: "DHD_IOS_AUTO_START") {
         didSet { UserDefaults.standard.set(autoStartGame, forKey: "DHD_IOS_AUTO_START") }
