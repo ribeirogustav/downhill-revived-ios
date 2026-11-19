@@ -1,4 +1,6 @@
-<p align="center"><img src="port/ios/assets/AppIcon.xcassets/AppIcon.appiconset/icon-180.png" width="112" alt="Independent cycling and mountain icon" /></p>
+<p align="center">
+  <img src="port/ios/assets/cover.webp" width="600" alt="Downhill Revived - iOS native port artwork" />
+</p>
 
 <h1 align="center">Downhill Revived for iOS</h1>
 

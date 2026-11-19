@@ -1,4 +1,6 @@
-<p align="center"><img src="port/ios/assets/AppIcon.xcassets/AppIcon.appiconset/icon-180.png" width="112" alt="Ícone independente de ciclismo e montanhas" /></p>
+<p align="center">
+  <img src="port/ios/assets/cover.webp" width="600" alt="Logotipo do Downhill Revived para iOS" />
+</p>
 
 <h1 align="center">Downhill Revived para iOS</h1>
 
