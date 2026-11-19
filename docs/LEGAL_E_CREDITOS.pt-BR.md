@@ -15,3 +15,7 @@ O IPA enviado está **sem assinatura**. A assinatura Apple exige credenciais e p
 **Checklist jurídico essencial:** preserve a licença, os créditos, os avisos de terceiros, o histórico e a relação com o upstream; mantenha o código das alterações iOS publicado; não distribua conteúdo do disco; deixe explícito o caráter independente e experimental.
 
 Estas orientações não são parecer jurídico. Para avaliar riscos concretos de uso de marcas e distribuição pública de binários, procure orientação profissional especializada.
+
+## Mídia demonstrativa
+
+Capturas e vídeos do jogo comercial não são incluídos neste fork para divulgação. O ícone independente do app é gerado especificamente para este projeto. Isso reduz a exposição a materiais protegidos, mas não elimina todos os riscos de direitos autorais ou marcas.

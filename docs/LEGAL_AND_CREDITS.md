@@ -29,3 +29,7 @@ The provided IPA is unsigned. A valid Apple signing/provisioning process is requ
 Keep `LICENSE`, `docs/CREDITS.md`, third-party notices, upstream attribution, source history, the iOS source changes and exact build instructions. State clearly that this is a community port and that its capabilities are experimental until confirmed on devices.
 
 These notes are general information, **not legal advice**. If your goal is to reduce legal exposure for public binary distribution or commercial branding, consult qualified counsel.
+
+## Promotional media
+
+Commercial-game screenshots and gameplay videos are not distributed for promotion. The app icon is an original illustration created for this fork. These precautions reduce exposure to protected materials but do not resolve all copyright or trademark risks.

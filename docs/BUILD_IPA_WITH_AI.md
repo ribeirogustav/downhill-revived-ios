@@ -73,11 +73,11 @@ shasum -a 256 build/ios/DownhillRevived.ipa
 python3 scripts/verify_release.py build/ios/DownhillRevived.ipa
 ```
 
-The published `4181572b...` hash matches the **specific unsigned 0.7.9 build 70902** supplied with this kit, not new builds or re-signed archives.
+The published `a917f5da...` hash matches the **specific unsigned 0.7.16 release IPA**, not new builds or re-signed archives.
 
 ## Reusable AI prompt
 
-> Act as a senior iOS game-porting engineer. I am maintaining an independent GPL-3.0-or-later iOS fork of https://github.com/skuza-oss/downhill-revived at upstream version 0.7.9. First inspect `port/ios/build_ios.py`, `port/ios/project/Info.plist`, `docs/BUILDING.md` and the actual build logs I provide. Help me build reproducibly on a Mac with full Xcode and Apple's iOS SDK, keeping iOS 17.0 minimum, ARM64, Metal, SwiftUI, SDL/GameController input, HDMI/AirPlay paths and optional 120 FPS. The build depends on source-derived core data from my own USA SCUS-97177 disc. Explain exact dependencies and propose minimal, testable patches. Never pretend to have executed Xcode or tested a physical phone, never request/share signing keys or game assets, and never propose signing bypasses. Respect the upstream author skuza-oss, GPL-3.0-or-later, third-party notices and the need to publish corresponding source code. Give exact commands and wait for me to supply real command outputs before diagnosing failures.
+> Act as a senior iOS game-porting engineer. I am maintaining an independent GPL-3.0-or-later iOS fork of https://github.com/skuza-oss/downhill-revived at upstream version 0.7.16. First inspect `port/ios/build_ios.py`, `port/ios/project/Info.plist`, `docs/BUILDING.md` and the actual build logs I provide. Help me build reproducibly on a Mac with full Xcode and Apple's iOS SDK, keeping iOS 17.0 minimum, ARM64, Metal, SwiftUI, SDL/GameController input, HDMI/AirPlay paths and optional 120 FPS. The build depends on source-derived core data from my own USA SCUS-97177 disc. Explain exact dependencies and propose minimal, testable patches. Never pretend to have executed Xcode or tested a physical phone, never request/share signing keys or game assets, and never propose signing bypasses. Respect the upstream author skuza-oss, GPL-3.0-or-later, third-party notices and the need to publish corresponding source code. Give exact commands and wait for me to supply real command outputs before diagnosing failures.
 
 Use that prompt in **ChatGPT, Gemini or Claude**, along with relevant source files and logs. It is platform-agnostic and works best when you share concrete compiler errors, one at a time.
 

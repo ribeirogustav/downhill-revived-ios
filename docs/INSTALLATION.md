@@ -11,7 +11,7 @@
 
 ## Important: the supplied IPA is unsigned
 
-`DownhillRevived-iOS-0.7.9-build-70902-unsigned.ipa` contains `CFBundleShortVersionString = 0.7.9`, build `70902` and `MinimumOSVersion = 17.0`, but has **no usable Apple signing/provisioning for direct device installation**. Merely renaming it, unzipping it or enabling Developer Mode does not sign it.
+`DownhillRevived-0.7.16-GitHub-unsigned.ipa` contains `CFBundleShortVersionString = 0.7.16`, build `71601` and `MinimumOSVersion = 17.0`, but has **no usable Apple signing/provisioning for direct device installation**. Merely renaming it, unzipping it or enabling Developer Mode does not sign it.
 
 To run the port, create an appropriately signed build for your device or use a valid development/distribution signing workflow. See [Build an IPA with AI](BUILD_IPA_WITH_AI.md). Never upload private signing keys or provisioning credentials to public issues.
 
@@ -30,9 +30,9 @@ Development provisioning may be limited to registered devices, accounts, validit
 
 The provided unsigned IPA's SHA-256 is:
 
-`4181572bd7b78ce87e956d52309e0879b3230f82a7511d325a6abd2b50adcc4c`
+`a917f5dae9f876642eb5aca839919b4d55da69ce085ad9855cee60b2ad6c0749`
 
-Re-signing or rebuilding changes the bytes and the hash. Check the exact filename against [`SHA256SUMS`](../SHA256SUMS).
+Re-signing or rebuilding changes the bytes and the hash. Check the exact filename against [`SHA256SUMS`](https://github.com/ribeirogustav/downhill-revived-ios/releases/tag/ios-v0.7.16).
 
 ## Troubleshooting
 

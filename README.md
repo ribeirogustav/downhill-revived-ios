@@ -1,6 +1,4 @@
-<p align="center">
-  <img src="assets/cover.webp" width="600" alt="Downhill Revived - iOS native port artwork" />
-</p>
+<p align="center"><img src="port/ios/assets/AppIcon.xcassets/AppIcon.appiconset/icon-180.png" width="112" alt="Independent cycling and mountain icon" /></p>
 
 <h1 align="center">Downhill Revived for iOS</h1>
 
@@ -57,19 +55,19 @@ The codebase is based on the work of **[skuza-oss](https://github.com/skuza-oss/
 ## Download
 
 - [Download the latest release](https://github.com/ribeirogustav/downhill-revived-ios/releases)
-- Current version: `0.7.9 (Beta)`
-- Asset: `DownhillRevived-iOS-0.7.9-build-70902-unsigned.ipa`
+- Current version: `0.7.16`
+- Asset: `DownhillRevived-0.7.16-GitHub-unsigned.ipa`
 - Target: iOS 17.0+ (ARM64 / Metal)
 
 This IPA is unsigned. It cannot be installed directly on an ordinary iPhone/iPad as-is. Developers may sign a build with an appropriate Apple team and provisioning profile. Instructions: [Installation and signing](docs/INSTALLATION.md).
 
-**SHA-256 of the unsigned IPA:**
+**SHA-256 of the 0.7.16 unsigned IPA:**
 
 ```text
-4181572bd7b78ce87e956d52309e0879b3230f82a7511d325a6abd2b50adcc4c
+a917f5dae9f876642eb5aca839919b4d55da69ce085ad9855cee60b2ad6c0749
 ```
 
-The hash above verifies the **exact unsigned 70902 IPA**. Signing, re-packaging or rebuilding changes its checksum. Compare only the matching release filename and see [`SHA256SUMS`](releases/ios-v0.7.9/SHA256SUMS).
+The hash above verifies the **exact unsigned 0.7.16 IPA**. Signing, re-packaging or rebuilding changes its checksum. Compare only the matching release filename and see [`SHA256SUMS`](https://github.com/ribeirogustav/downhill-revived-ios/releases/tag/ios-v0.7.16).
 
 ## Requirements
 
@@ -96,32 +94,9 @@ The game content, BIOS, music, movies and disc image are **not distributed** wit
 
 Read the full [installation guide](docs/INSTALLATION.md).
 
-## Screenshots and gameplay
+## Native iOS implementation
 
-### Gameplay preview
-
-<p align="center">
-  <img src="assets/gameplay-preview.webp" width="640" alt="Downhill Revived iOS Gameplay Preview" />
-</p>
-
-<p align="center">
-  🎬 <em>Captured on a physical iPhone 7 Plus running native Metal at 30/120 FPS.</em><br>
-  <a href="https://github.com/ribeirogustav/downhill-revived-ios/raw/main/assets/gameplay.mp4"><strong>▶️ Download / Watch full 60s gameplay clip (assets/gameplay.mp4)</strong></a>
-</p>
-
-### On-device screenshots
-
-| Gameplay (Racing) | Career Selection |
-| :---: | :---: |
-| ![Gameplay Racing](assets/screenshots/06-gameplay.webp) | ![Career Selection](assets/screenshots/05-career-menu.webp) |
-
-| Title Screen & Touch Overlay | Native Launcher (Landscape) |
-| :---: | :---: |
-| ![Touch Overlay](assets/screenshots/04-title-touch.webp) | ![Launcher Landscape](assets/screenshots/02-launcher-landscape.webp) |
-
-| Native Launcher (Portrait) | In-Game Touch Controls (Portrait) |
-| :---: | :---: |
-| <img src="assets/screenshots/01-launcher-portrait.webp" width="320" alt="iOS Launcher Portrait" /> | <img src="assets/screenshots/03-touch-portrait.webp" width="320" alt="Touch Controls Portrait" /> |
+This fork includes a SwiftUI launcher, Metal rendering, touch controls and external-display support. Commercial game imagery and gameplay videos are intentionally excluded from this repository. Playing requires separately supplying legally obtained game files as described in the installation guide.
 
 ## Build an IPA with AI
 

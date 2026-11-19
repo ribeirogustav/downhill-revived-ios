@@ -11,7 +11,7 @@
 
 ## Atenção: o IPA disponível não está assinado
 
-O arquivo `DownhillRevived-iOS-0.7.9-build-70902-unsigned.ipa` é um pacote de desenvolvimento **sem assinatura e provisionamento Apple válidos**. O simples download ou a ativação do Modo de Desenvolvedor **não permite instalá-lo diretamente** em um iPhone comum.
+O arquivo `DownhillRevived-0.7.16-GitHub-unsigned.ipa` é um pacote de desenvolvimento **sem assinatura e provisionamento Apple válidos**. O simples download ou a ativação do Modo de Desenvolvedor **não permite instalá-lo diretamente** em um iPhone comum.
 
 Para instalar, você deve gerar ou obter uma compilação assinada adequadamente, utilizando os métodos autorizados de desenvolvimento/distribuição Apple. Veja o [tutorial para compilar o IPA com IA](BUILD_IPA_WITH_AI.pt-BR.md).
 
@@ -36,10 +36,10 @@ Assinaturas de desenvolvimento podem ter restrições quanto ao dispositivo, à 
 
 ## Como conferir o download
 
-SHA-256 do **IPA não assinado enviado para a primeira publicação**:
+SHA-256 do **IPA não assinado da versão 0.7.16**:
 
 ```text
-4181572bd7b78ce87e956d52309e0879b3230f82a7511d325a6abd2b50adcc4c
+a917f5dae9f876642eb5aca839919b4d55da69ce085ad9855cee60b2ad6c0749
 ```
 
 Após assinar ou recompilar, o checksum será diferente. Use os valores fornecidos com a versão específica do arquivo.

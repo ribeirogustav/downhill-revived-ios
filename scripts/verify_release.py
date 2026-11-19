@@ -12,8 +12,8 @@ import sys
 import zipfile
 from pathlib import Path
 
-KNOWN_UNSIGNED_NAME = "DownhillRevived-iOS-0.7.9-build-70902-unsigned.ipa"
-KNOWN_UNSIGNED_SHA256 = "4181572bd7b78ce87e956d52309e0879b3230f82a7511d325a6abd2b50adcc4c"
+KNOWN_UNSIGNED_NAME = "DownhillRevived-0.7.16-GitHub-unsigned.ipa"
+KNOWN_UNSIGNED_SHA256 = "a917f5dae9f876642eb5aca839919b4d55da69ce085ad9855cee60b2ad6c0749"
 
 
 def sha256(path: Path) -> str:

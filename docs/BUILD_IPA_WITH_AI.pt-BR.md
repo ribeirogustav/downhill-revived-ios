@@ -1,6 +1,6 @@
 # Como gerar o IPA com ChatGPT, Gemini ou Claude
 
-> Este tutorial foi escrito para o fork nativo de iOS do **Downhill Revived 0.7.9**. A IA ajuda a programar, inspecionar logs e resolver erros; a compilação de verdade depende das ferramentas da Apple e das dependências do projeto.
+> Este tutorial foi escrito para o fork nativo de iOS do **Downhill Revived 0.7.16**. A IA ajuda a programar, inspecionar logs e resolver erros; a compilação de verdade depende das ferramentas da Apple e das dependências do projeto.
 
 [Voltar ao README](../README.pt-BR.md) | [English](BUILD_IPA_WITH_AI.md)
 
@@ -131,7 +131,7 @@ unzip -p build/ios/DownhillRevived.ipa \
 plutil -p /tmp/downhill-info.plist
 ```
 
-Confirme `MinimumOSVersion` = `17.0`, `CFBundleShortVersionString` = `0.7.9`, arquitetura ARM64, compatibilidade Metal e a presença de perfil de provisionamento **se a saída for assinada**.
+Confirme `MinimumOSVersion` = `17.0`, `CFBundleShortVersionString` = `0.7.16`, arquitetura ARM64, compatibilidade Metal e a presença de perfil de provisionamento **se a saída for assinada**.
 
 Você também pode executar o verificador deste material:
 
@@ -139,13 +139,13 @@ Você também pode executar o verificador deste material:
 python3 scripts/verify_release.py build/ios/DownhillRevived.ipa
 ```
 
-O SHA-256 publicado na primeira versão deste fork (`4181572b...`) refere-se **exclusivamente** ao IPA não assinado, build 70902, recebido para a publicação. Uma nova compilação ou assinatura não deve reutilizar aquele checksum.
+O SHA-256 publicado na Release pública 0.7.16 (`a917f5da...`) refere-se **exclusivamente** ao IPA não assinado dessa release. Uma nova compilação ou assinatura não deve reutilizar aquele checksum.
 
 ## 8. Prompt pronto para ChatGPT, Gemini ou Claude
 
 Copie e cole, anexando o projeto ou disponibilizando os arquivos de código relevantes:
 
-> Você é um engenheiro experiente em portabilidade de jogos para iOS. Estou trabalhando em um fork GPL-3.0-or-later do projeto https://github.com/skuza-oss/downhill-revived, baseado na versão 0.7.9. Minha implementação iOS está em `port/ios/` e usa SwiftUI, Objective-C, Metal, núcleo C/wasm2c e renderização em Rust. Analise primeiro `port/ios/build_ios.py`, `port/ios/project/Info.plist`, `docs/BUILDING.md` e os logs que eu enviar. Crie um plano de compilação **reproduzível em um Mac com Xcode**, preservando o iOS mínimo 17.0, ARM64 e Metal. Ajude-me a configurar as dependências, resolver erros sem apagar funcionalidades, gerar um IPA não assinado e, posteriormente, assiná-lo com **minha própria conta Apple**. Não invente resultados de compilação, não peça certificados ou senhas em texto e não tente contornar a assinatura do iOS. Não inclua ISO, BIOS nem arquivos protegidos do jogo no repositório. Preserve a licença GPL, todos os créditos do autor skuza-oss e os avisos de terceiros. Antes de modificar qualquer arquivo, indique a alteração, o motivo e o teste para validá-la. Considere AirPlay/HDMI, controles físicos, controles por toque e perfis 60/120 FPS recursos experimentais que precisam de testes em aparelho real.
+> Você é um engenheiro experiente em portabilidade de jogos para iOS. Estou trabalhando em um fork GPL-3.0-or-later do projeto https://github.com/skuza-oss/downhill-revived, baseado na versão 0.7.16. Minha implementação iOS está em `port/ios/` e usa SwiftUI, Objective-C, Metal, núcleo C/wasm2c e renderização em Rust. Analise primeiro `port/ios/build_ios.py`, `port/ios/project/Info.plist`, `docs/BUILDING.md` e os logs que eu enviar. Crie um plano de compilação **reproduzível em um Mac com Xcode**, preservando o iOS mínimo 17.0, ARM64 e Metal. Ajude-me a configurar as dependências, resolver erros sem apagar funcionalidades, gerar um IPA não assinado e, posteriormente, assiná-lo com **minha própria conta Apple**. Não invente resultados de compilação, não peça certificados ou senhas em texto e não tente contornar a assinatura do iOS. Não inclua ISO, BIOS nem arquivos protegidos do jogo no repositório. Preserve a licença GPL, todos os créditos do autor skuza-oss e os avisos de terceiros. Antes de modificar qualquer arquivo, indique a alteração, o motivo e o teste para validá-la. Considere AirPlay/HDMI, controles físicos, controles por toque e perfis 60/120 FPS recursos experimentais que precisam de testes em aparelho real.
 
 ### Como conduzir a conversa com a IA
 
