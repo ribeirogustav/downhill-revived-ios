@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="port/ios/assets/cover.webp" width="600" alt="Logotipo do Downhill Revived para iOS" />
+  <img src="../port/ios/assets/cover.webp" width="600" alt="Logotipo do Downhill Revived para iOS" />
 </p>
 
 <h1 align="center">Downhill Revived para iOS</h1>
@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <strong>Português (Brasil)</strong> | <a href="README.md">English</a>
+  <strong>Português (Brasil)</strong> | <a href="../README.md">English</a>
 </p>
 
 <p align="center">
@@ -31,7 +31,7 @@
 
 ---
 
-O código-fonte usa a tag oficial **0.7.16**. Cada controle touch pode ser ajustado de **25% a 600%**, com perfis de retrato e paisagem para iPhone e iPad. Veja os [controles touch](ATUALIZACOES_TOUCH_600_IPAD.md) e a [integração do iOS](docs/IOS_UPSTREAM_0.7.16.md).
+O código-fonte usa a tag oficial **0.7.16**. Cada controle touch pode ser ajustado de **25% a 600%**, com perfis de retrato e paisagem para iPhone e iPad. Veja os [controles touch](ios/ATUALIZACOES_TOUCH_600_IPAD.md) e a [integração do iOS](IOS_UPSTREAM_0.7.16.md).
 
 
 Este fork leva o projeto de código aberto **Downhill Revived** aos dispositivos Apple, com launcher em SwiftUI, renderização nativa via Metal, controles por toque e suporte a telas externas. Não é um front-end de emulador, e não possui vínculo oficial com os detentores dos direitos do jogo.
@@ -61,7 +61,7 @@ Todo o trabalho original de recriação, descompilação e port para computadore
 - Arquivo: `DownhillRevived-0.7.16-GitHub-unsigned.ipa`
 - Plataforma: iOS 17.0+ (ARM64 / Metal)
 
-Atenção: esse IPA não está assinado digitalmente e não pode ser instalado diretamente em um iPhone comum. Para instalar, é necessário assinar o aplicativo com credenciais e provisionamento Apple válidos. Leia [instalação e assinatura](docs/INSTALACAO.pt-BR.md).
+Atenção: esse IPA não está assinado digitalmente e não pode ser instalado diretamente em um iPhone comum. Para instalar, é necessário assinar o aplicativo com credenciais e provisionamento Apple válidos. Leia [instalação e assinatura](INSTALACAO.pt-BR.md).
 
 **SHA-256 do IPA 0.7.16 não assinado:**
 
@@ -94,7 +94,7 @@ O projeto **não inclui a ISO**, executável original do PS2, BIOS, vídeos, mú
 4. Abra o launcher e importe sua própria ISO **Downhill Domination USA (SCUS-97177)**.
 5. Ajuste gráficos, controles e eventual saída para TV antes de jogar.
 
-Veja o [guia de instalação completo](docs/INSTALACAO.pt-BR.md).
+Veja o [guia de instalação completo](INSTALACAO.pt-BR.md).
 
 ## Port nativo para iOS
 
@@ -104,9 +104,9 @@ O launcher SwiftUI, a renderização Metal, os controles por toque e o suporte a
 
 É possível usar **ChatGPT, Gemini ou Claude** como assistente para ler o código, orientar a compilação, corrigir erros e explicar dependências. A IA **não substitui o macOS, Xcode, SDK do iOS, assinatura digital ou a ISO original**.
 
-O projeto já dispõe do script [`port/ios/build_ios.py`](port/ios/build_ios.py). O passo a passo apresenta tanto a geração sem assinatura quanto a assinatura com uma equipe Apple:
+O projeto já dispõe do script [`port/ios/build_ios.py`](../port/ios/build_ios.py). O passo a passo apresenta tanto a geração sem assinatura quanto a assinatura com uma equipe Apple:
 
-**[Tutorial completo de geração do IPA com IA](docs/BUILD_IPA_WITH_AI.pt-BR.md)** · **[English](docs/BUILD_IPA_WITH_AI.md)**
+**[Tutorial completo de geração do IPA com IA](BUILD_IPA_WITH_AI.pt-BR.md)** · **[English](BUILD_IPA_WITH_AI.md)**
 
 ```bash
 # Gera IPA não assinado, apenas para inspeção e desenvolvimento
@@ -124,11 +124,11 @@ Esses comandos exigem Xcode e as ferramentas do projeto instaladas, além dos da
 
 **Jogo original:** *Downhill Domination* (2003), relacionado à Incognito Entertainment, Sony Computer Entertainment America e respectivos titulares. Nomes, marcas e recursos do jogo pertencem aos seus detentores. Não há afiliação, patrocínio ou endosso.
 
-**Terceiros:** consulte os [créditos preservados do projeto original](docs/CREDITS.md), incluindo SDL, PCSX2, wgpu, WABT e colaboradores. As referências aos recursos de toque incluem [Kenney](https://kenney.nl), sob CC0, conforme as notas do código.
+**Terceiros:** consulte os [créditos preservados do projeto original](CREDITS.md), incluindo SDL, PCSX2, wgpu, WABT e colaboradores. As referências aos recursos de toque incluem [Kenney](https://kenney.nl), sob CC0, conforme as notas do código.
 
-**Licença de código:** **[GNU GPL-3.0-or-later](LICENSE)**, com preservação das licenças e avisos de terceiros. A publicação de binários exige cumprir as obrigações da licença, inclusive disponibilizar o código-fonte correspondente. A GPL não dá direito sobre os arquivos ou marcas do jogo comercial.
+**Licença de código:** **[GNU GPL-3.0-or-later](../LICENSE)**, com preservação das licenças e avisos de terceiros. A publicação de binários exige cumprir as obrigações da licença, inclusive disponibilizar o código-fonte correspondente. A GPL não dá direito sobre os arquivos ou marcas do jogo comercial.
 
-Consulte [notas jurídicas e créditos](docs/LEGAL_AND_CREDITS.md). Este conteúdo não substitui aconselhamento jurídico.
+Consulte [notas jurídicas e créditos](LEGAL_AND_CREDITS.md). Este conteúdo não substitui aconselhamento jurídico.
 
 ---
 

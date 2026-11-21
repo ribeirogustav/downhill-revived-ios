@@ -2,7 +2,7 @@
 
 > Este tutorial foi escrito para o fork nativo de iOS do **Downhill Revived 0.7.16**. A IA ajuda a programar, inspecionar logs e resolver erros; a compilação de verdade depende das ferramentas da Apple e das dependências do projeto.
 
-[Voltar ao README](../README.pt-BR.md) | [English](BUILD_IPA_WITH_AI.md)
+[Voltar ao README](README.pt-BR.md) | [English](BUILD_IPA_WITH_AI.md)
 
 ## 1. O que a IA faz e o que ela não faz
 

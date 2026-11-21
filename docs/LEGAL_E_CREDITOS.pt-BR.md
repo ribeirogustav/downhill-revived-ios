@@ -1,6 +1,6 @@
 # Créditos, licenças e observações jurídicas
 
-[Voltar ao README](../README.pt-BR.md) | [English](LEGAL_AND_CREDITS.md)
+[Voltar ao README](README.pt-BR.md) | [English](LEGAL_AND_CREDITS.md)
 
 Este repositório será um **fork independente para iOS** do [Downhill Revived](https://github.com/skuza-oss/downhill-revived), originalmente desenvolvido por **skuza-oss** e colaboradores. O trabalho de descompilação, port nativo, arquitetura principal e documentação original deve continuar atribuído aos seus respectivos autores.
 
