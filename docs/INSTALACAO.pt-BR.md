@@ -1,6 +1,6 @@
 # Como instalar o Downhill Revived no iPhone ou iPad
 
-[Voltar ao README](../README.pt-BR.md) | [English](INSTALLATION.md)
+[Voltar ao README](README.pt-BR.md) | [English](INSTALLATION.md)
 
 ## Compatibilidade
 
