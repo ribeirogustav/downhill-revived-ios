@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <a href="README.pt-BR.md">Português (Brasil)</a> | <strong>English</strong>
+  <a href="docs/README.pt-BR.md">Português (Brasil)</a> | <strong>English</strong>
 </p>
 
 <p align="center">
@@ -31,7 +31,7 @@
 
 ---
 
-The source uses upstream tag **0.7.16**. Each touch control scales from **25% to 600%**, with portrait and landscape layouts for iPhone and iPad. See the [touch controls](ATUALIZACOES_TOUCH_600_IPAD.md) and [iOS integration notes](docs/IOS_UPSTREAM_0.7.16.md).
+The source uses upstream tag **0.7.16**. Each touch control scales from **25% to 600%**, with portrait and landscape layouts for iPhone and iPad. See the [touch controls](docs/ios/ATUALIZACOES_TOUCH_600_IPAD.md) and [iOS integration notes](docs/IOS_UPSTREAM_0.7.16.md).
 
 
 Downhill Revived for iOS brings the open-source **Downhill Revived** project to Apple's mobile devices with a SwiftUI launcher, native Metal rendering, touch controls and external-display support. It is **not an emulator front-end** and is **not affiliated with the original game's rights holders**.
