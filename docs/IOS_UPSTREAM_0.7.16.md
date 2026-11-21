@@ -18,7 +18,7 @@ python3 port/ios/build_ios.py --rebuild-core --unsigned
 
 ### Gerar os dois IPAs de uma vez
 
-Na raiz do projeto, rode `python3 GERAR_IPAS.py`. O script recompila o núcleo uma vez e gera os dois pacotes em `build/ios/`:
+Na raiz do projeto, rode `python3 port/ios/gerar_ipas.py`. O script recompila o núcleo uma vez e gera os dois pacotes em `build/ios/`:
 
 - `DownhillRevived-0.7.16-GitHub-unsigned.ipa` é a cópia pública sem assinatura.
 - `DownhillRevived-0.7.16-Pessoal-signed.ipa` é a cópia assinada para os dispositivos autorizados no perfil de desenvolvimento.
